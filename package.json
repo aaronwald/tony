@@ -1,0 +1,17 @@
+{
+  "name": "tony",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "start": "bun run dist/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.10",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@openrouter/sdk": "^0.4.0"
+  }
+}

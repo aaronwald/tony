@@ -1,0 +1,23 @@
+
+{
+  "tasks": [
+    {
+      "id": "task1",
+      "description": "Complete the user registration form.",
+      "steps": [
+        "Go to the registration page.",
+        "Fill in your personal details.",
+        "Submit the form."
+      ]
+    },
+    {
+      "id": "task2",
+      "description": "Set up your profile.",
+      "steps": [
+        "Upload a profile picture.",
+        "Add a bio.",
+        "Save your changes."
+      ]
+    }
+  ]
+}
