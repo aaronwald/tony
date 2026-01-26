@@ -1,0 +1,19 @@
+{
+  "name": "tony",
+  "version": "1.0.0",
+  "description": "A template TypeScript project using Bun to compile to a single binary",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --compile --outfile tony",
+    "dev": "bun --watch src/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
