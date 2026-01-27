@@ -33,7 +33,11 @@
       },
       "memory": {
         "context": ["You are a terse assistant. Use the fetchFoo tool to retrieve Foo items when asked."],
-        "history": []
+        "history": [
+          { "role": "assistant", "content": "Provide me with the ID of the Foo item you want to fetch." },
+          { "role": "assistant", "content": "Provide me with the ID of the Foo item you want to fetch." },
+          { "role": "assistant", "content": "Provide me with the ID of the Foo item you want to fetch." }
+        ]
       },
       "input": "Please fetch the Foo item with ID 'abc123' and tell me what you found."
     }

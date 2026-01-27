@@ -1,18 +1,16 @@
 import { OpenAI } from "openai";
-import type {
-  ChatCompletionMessageParam,
-  ChatCompletionTool,
-} from "openai/resources/chat/completions";
+import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import {
   loadInstructions,
   Instructions,
   Task,
   ChatTask,
   AgentTask,
-  ToolDefinition,
 } from "./instructions.js";
 import { createCLI, addCommand, runCli } from "./cli.js";
 import { Memory, createMemory } from "./memory.js";
+import { ToolCall, executeTool, buildToolDefinition } from "./tool.js";
+import { assert } from "node:console";
 
 /*
 system (System Prompt): Used to define the persona, tone, rules, and constraints for the AI before the conversation begins, ensuring the model acts according to specific guidelines. It is typically the first message.
@@ -25,6 +23,7 @@ const controller = new AbortController();
 process.on("SIGINT", () => controller.abort());
 
 const DEFAULT_MODEL = "liquid/lfm-2.5-1.2b-thinking:free";
+const DEFAULT_OPEN_AI_URL = "https://openrouter.ai/api/v1";
 const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 500;
 
@@ -40,6 +39,17 @@ function getErrorStatus(error: unknown): number | undefined {
 function shouldRetry(error: unknown): boolean {
   const status = getErrorStatus(error);
   return status === 429 || (typeof status === "number" && status >= 500);
+}
+
+function getOpenAIClient(): OpenAI {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing OPENROUTER_API_KEY in environment.");
+  }
+  return new OpenAI({
+    baseURL: DEFAULT_OPEN_AI_URL,
+    apiKey: apiKey,
+  });
 }
 
 async function createChatCompletion(
@@ -64,17 +74,6 @@ async function createChatCompletion(
   }
 }
 
-function getOpenAIClient(): OpenAI {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error("Missing OPENROUTER_API_KEY in environment.");
-  }
-  return new OpenAI({
-    baseURL: "https://openrouter.ai/api/v1",
-    apiKey: apiKey,
-  });
-}
-
 async function runChatTask(
   openai: OpenAI,
   task: ChatTask,
@@ -85,18 +84,12 @@ async function runChatTask(
     model,
     messages: buildChatMessages(task),
   });
-  console.log(completion.choices[0].message);
-}
 
-function buildToolDefinition(tool: ToolDefinition): ChatCompletionTool {
-  return {
-    type: "function",
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-    },
-  };
+  for (const choice of completion.choices) {
+    console.log(`  🗨️  Assistant: ${choice.message.content}`);
+  }
+  // console.log(completion.choices[0].message);
+
 }
 
 function buildMessages(memory: Memory): ChatCompletionMessageParam[] {
@@ -104,7 +97,7 @@ function buildMessages(memory: Memory): ChatCompletionMessageParam[] {
 
   // Add context as system messages
   for (const ctx of memory.getContext()) {
-    messages.push({ role: "system", content: ctx });
+    messages.push({ role: "system", content: ctx }); // Context becomes the system (first) msg
   }
 
   // Add conversation history
@@ -141,49 +134,6 @@ function buildChatMessages(task: ChatTask): ChatCompletionMessageParam[] {
   return messages;
 }
 
-interface ToolCall {
-  id: string;
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
-async function executeTool(toolCall: ToolCall): Promise<string> {
-  const { name, arguments: argsJson } = toolCall.function;
-  let args: Record<string, unknown>;
-
-  try {
-    args = JSON.parse(argsJson) as Record<string, unknown>;
-  } catch {
-    return JSON.stringify({ error: `Invalid JSON arguments for tool ${name}` });
-  }
-
-  console.log(`  📞 Tool call: ${name}(${JSON.stringify(args)})`);
-
-  // Tool implementations
-  switch (name) {
-    case "fetchFoo": {
-      const id = args.id as string | undefined;
-      // Stub implementation - returns mock data
-      return JSON.stringify({
-        success: true,
-        data: {
-          id: id ?? "default",
-          name: "Foo Item",
-          value: 42,
-          timestamp: new Date().toISOString(),
-        },
-      });
-    }
-    default:
-      return JSON.stringify({
-        result: `Stub response for ${name}`,
-        args,
-      });
-  }
-}
-
 const MAX_AGENT_ITERATIONS = 10;
 
 async function runAgentTask(
@@ -216,6 +166,7 @@ async function runAgentTask(
       tool_choice: "auto",
     });
 
+    assert(completion.choices.length === 1, "No choices returned from model");
     const choice = completion.choices[0];
     if (!choice) {
       console.error("  No response from model");
@@ -230,6 +181,7 @@ async function runAgentTask(
     }
 
     // If no tool calls, we're done - save final response to memory
+    // Iterate til no more tools to do
     if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
       console.log(`  Assistant: ${assistantMessage.content}`);
       return memory;
@@ -266,7 +218,13 @@ async function runTask(
       await runChatTask(getClient(), task, model);
       break;
     case "agent":
-      await runAgentTask(getClient(), task, model);
+      const memory:Memory = await runAgentTask(getClient(), task, model);
+      if (memory) {
+        console.log("  Final agent memory:");
+        for (const entry of memory.getHistory()) {
+          console.log(`    [${entry.role}] ${entry.content}`);
+        }
+      }
       break;
   }
 }
