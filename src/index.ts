@@ -24,7 +24,7 @@ process.on("SIGINT", () => controller.abort());
 
 const DEFAULT_MODEL = "liquid/lfm-2.5-1.2b-thinking:free";
 const DEFAULT_OPEN_AI_URL = "https://openrouter.ai/api/v1";
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 8;
 const RETRY_BASE_DELAY_MS = 500;
 
 function sleep(ms: number): Promise<void> {
@@ -135,6 +135,18 @@ function buildChatMessages(task: ChatTask): ChatCompletionMessageParam[] {
 }
 
 const MAX_AGENT_ITERATIONS = 10;
+const MAX_REPEATED_ASSISTANT_MESSAGES = 2;
+
+function isLowValueAssistantMessage(content: string | null | undefined): boolean {
+  if (!content) {
+    return true;
+  }
+  const trimmed = content.trim();
+  if (trimmed.length === 0) {
+    return true;
+  }
+  return false;
+}
 
 async function runAgentTask(
   openai: OpenAI,
@@ -146,6 +158,8 @@ async function runAgentTask(
   const memory = createMemory(task.memory);
   const tools = [buildToolDefinition(task.tool)];
   const messages = buildMessages(memory);
+  let lastAssistantContent: string | undefined;
+  let repeatedAssistantCount = 0;
 
   if (!memory.endsWithUserMessage()) {
     if (task.input) {
@@ -178,6 +192,23 @@ async function runAgentTask(
     if (assistantMessage.content) {
       // Keep in-session memory updated without persisting it to disk.
       memory.appendAssistant(assistantMessage.content);
+    }
+
+    if (assistantMessage.content === lastAssistantContent) {
+      repeatedAssistantCount += 1;
+    } else {
+      repeatedAssistantCount = 0;
+      lastAssistantContent = assistantMessage.content ?? lastAssistantContent;
+    }
+
+    if (repeatedAssistantCount >= MAX_REPEATED_ASSISTANT_MESSAGES) {
+      console.log("  Stopping: repeated assistant responses detected.");
+      return memory;
+    }
+
+    if (isLowValueAssistantMessage(assistantMessage.content)) {
+      console.log("  Stopping: low-value assistant response detected.");
+      return memory;
     }
 
     // If no tool calls, we're done - save final response to memory
