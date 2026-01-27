@@ -32,7 +32,7 @@
         }
       },
       "memory": {
-        "context": ["You are a helpful assistant. Use the fetchFoo tool to retrieve Foo items when asked."],
+        "context": ["You are a terse assistant. Use the fetchFoo tool to retrieve Foo items when asked."],
         "history": []
       },
       "input": "Please fetch the Foo item with ID 'abc123' and tell me what you found."
