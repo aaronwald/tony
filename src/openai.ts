@@ -1,4 +1,6 @@
 import { OpenAI } from "openai";
+import type { ChatCompletion, ChatCompletionChunk } from "openai/resources/chat/completions";
+import type { Stream } from "openai/streaming";
 
 const controller = new AbortController();
 
@@ -33,10 +35,20 @@ export function getOpenAIClient(): OpenAI {
   });
 }
 
+export function createChatCompletion(
+  openai: OpenAI,
+  params: Parameters<typeof openai.chat.completions.create>[0] & { stream: true }
+): Promise<Stream<ChatCompletionChunk>>;
+export function createChatCompletion(
+  openai: OpenAI,
+  params: Omit<Parameters<typeof openai.chat.completions.create>[0], "stream"> & {
+    stream?: false;
+  }
+): Promise<ChatCompletion>;
 export async function createChatCompletion(
   openai: OpenAI,
   params: Parameters<typeof openai.chat.completions.create>[0]
-): Promise<Awaited<ReturnType<typeof openai.chat.completions.create>>> {
+): Promise<Stream<ChatCompletionChunk> | ChatCompletion> {
   let attempt = 0;
   while (true) {
     try {

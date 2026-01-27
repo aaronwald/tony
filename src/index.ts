@@ -1,5 +1,9 @@
 import { OpenAI } from "openai";
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import type {
+  ChatCompletion,
+  ChatCompletionChunk,
+  ChatCompletionMessageParam,
+} from "openai/resources/chat/completions";
 import {
   loadInstructions,
   Instructions,
@@ -10,8 +14,8 @@ import {
 import { createCLI, addCommand, runCli } from "./cli.js";
 import { Memory, createMemory } from "./memory.js";
 import { ToolCall, executeTool, buildToolDefinition } from "./tool.js";
-import { assert } from "node:console";
 import { createChatCompletion, getOpenAIClient } from "./openai.js";
+import type { Stream } from "openai/streaming";
 
 /*
 system (System Prompt): Used to define the persona, tone, rules, and constraints for the AI before the conversation begins, ensuring the model acts according to specific guidelines. It is typically the first message.
@@ -23,22 +27,126 @@ const DEFAULT_MODEL = "liquid/lfm-2.5-1.2b-thinking:free";
 const MAX_AGENT_ITERATIONS = 10;
 const MAX_REPEATED_ASSISTANT_MESSAGES = 2;
 
+type AssistantMessage = ChatCompletion["choices"][number]["message"];
+
+type ToolCallAccumulator = {
+  id?: string;
+  type: "function";
+  function: {
+    name?: string;
+    arguments?: string;
+  };
+};
+
+function isStreamResponse(
+  response: unknown
+): response is Stream<ChatCompletionChunk> {
+  return Boolean(response && (response as Stream<ChatCompletionChunk>)[Symbol.asyncIterator]);
+}
+
+function accumulateToolCalls(
+  target: ToolCallAccumulator[],
+  deltas: Array<{
+    index?: number;
+    id?: string;
+    type?: string;
+    function?: { name?: string; arguments?: string };
+  }>
+): void {
+  for (const delta of deltas) {
+    const index = delta.index ?? target.length;
+    if (!target[index]) {
+      target[index] = { type: "function", function: {} };
+    }
+    if (delta.id) {
+      target[index].id = delta.id;
+    }
+    if (delta.type === "function") {
+      target[index].type = "function";
+    }
+    if (delta.function?.name) {
+      target[index].function.name = delta.function.name;
+    }
+    if (delta.function?.arguments) {
+      target[index].function.arguments =
+        (target[index].function.arguments ?? "") + delta.function.arguments;
+    }
+  }
+}
+
+async function consumeStream(
+  stream: Stream<ChatCompletionChunk>,
+  label?: string
+): Promise<AssistantMessage> {
+  let content = "";
+  const toolCalls: ToolCallAccumulator[] = [];
+
+  if (label) {
+    process.stdout.write(label);
+  }
+
+  for await (const chunk of stream) {
+    const choice = chunk.choices[0];
+    const delta = choice?.delta;
+    if (!delta) {
+      continue;
+    }
+    if (delta.content) {
+      content += delta.content;
+      process.stdout.write(delta.content);
+    }
+    if (delta.tool_calls) {
+      accumulateToolCalls(toolCalls, delta.tool_calls as Array<{
+        index?: number;
+        id?: string;
+        type?: string;
+        function?: { name?: string; arguments?: string };
+      }>);
+    }
+  }
+
+  if (label) {
+    process.stdout.write("\n");
+  }
+
+  return {
+    role: "assistant",
+    content: content.length > 0 ? content : null,
+    tool_calls: toolCalls.length > 0 ? (toolCalls as AssistantMessage["tool_calls"]) : undefined,
+  };
+}
+
+async function createAssistantMessage(
+  openai: OpenAI,
+  params: Parameters<typeof openai.chat.completions.create>[0],
+  label?: string
+): Promise<AssistantMessage> {
+  const response = await createChatCompletion(openai, { ...params, stream: true });
+  if (isStreamResponse(response)) {
+    return consumeStream(response, label);
+  }
+  const message = response.choices[0].message;
+  if (label) {
+    process.stdout.write(label);
+    process.stdout.write(`${message.content ?? ""}\n`);
+  }
+  return message;
+}
+
 async function runChatTask(
   openai: OpenAI,
   task: ChatTask,
   model: string
 ): Promise<void> {
   console.log(`💬 Running chat task: ${task.id}`);
-  const completion = await createChatCompletion(openai, {
-    model,
-    messages: buildChatMessages(task),
-  });
-
-  for (const choice of completion.choices) {
-    console.log(`  🗨️  Assistant: ${choice.message.content}`);
-  }
-  // console.log(completion.choices[0].message);
-
+  await createAssistantMessage(
+    openai,
+    {
+      model,
+      messages: buildChatMessages(task),
+    },
+    "  🗨️  Assistant: "
+  );
 }
 
 function buildMessages(memory: Memory): ChatCompletionMessageParam[] {
@@ -120,21 +228,16 @@ async function runAgentTask(
   }
 
   for (let i = 0; i < MAX_AGENT_ITERATIONS; i++) {
-    const completion = await createChatCompletion(openai, {
-      model,
-      messages,
-      tools,
-      tool_choice: "auto",
-    });
-
-    assert(completion.choices.length === 1, "No choices returned from model");
-    const choice = completion.choices[0];
-    if (!choice) {
-      console.error("  No response from model");
-      return memory;
-    }
-
-    const assistantMessage = choice.message;
+    const assistantMessage = await createAssistantMessage(
+      openai,
+      {
+        model,
+        messages,
+        tools,
+        tool_choice: "auto",
+      },
+      "  🤖 Assistant: "
+    );
     messages.push(assistantMessage);
     if (assistantMessage.content) {
       // Keep in-session memory updated without persisting it to disk.

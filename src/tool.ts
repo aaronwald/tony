@@ -1,5 +1,6 @@
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import type { ToolDefinition } from "./instructions.js";
+import assert from "node:assert";
 
 export interface ToolCall {
   id: string;
@@ -48,6 +49,7 @@ export async function executeTool(toolCall: ToolCall): Promise<string> {
       });
     }
     default:
+      assert(false, `Unknown tool name: ${name}`);
       return JSON.stringify({
         result: `Stub response for ${name}`,
         args,
