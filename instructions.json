@@ -5,32 +5,37 @@
       "id": "task1",
       "type": "chat",
       "prompt": "You are a creative writing assistant.",
-      "description": "Write a short story about a robot learning to love."
+      "description": "Write a short story about a robot learning to love.",
+      "memory": {
+        "context": ["Keep the tone warm and hopeful."],
+        "history": [
+          { "role": "user", "content": "Start with a vivid scene in a quiet workshop." }
+        ]
+      }
     },
     {
       "id": "task2",
       "type": "agent",
       "model": "openai/gpt-4o-mini",
       "tool": {
-        "name": "search",
-        "description": "Search for information on a topic",
+        "name": "fetchFoo",
+        "description": "Fetch a Foo item by its ID. Returns the item's name, value, and timestamp.",
         "parameters": {
           "type": "object",
           "properties": {
-            "query": {
+            "id": {
               "type": "string",
-              "description": "The search query"
+              "description": "The ID of the Foo item to fetch"
             }
           },
-          "required": ["query"]
+          "required": ["id"]
         }
       },
       "memory": {
-        "context": ["You are a helpful research assistant. Use the search tool to find information."],
-        "history": [
-          { "role": "user", "content": "Search for the latest news about AI safety." }
-        ]
-      }
+        "context": ["You are a helpful assistant. Use the fetchFoo tool to retrieve Foo items when asked."],
+        "history": []
+      },
+      "input": "Please fetch the Foo item with ID 'abc123' and tell me what you found."
     }
   ]
 }

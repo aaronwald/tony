@@ -12,6 +12,13 @@ import {
   ToolDefinition,
 } from "./instructions.js";
 import { createCLI, addCommand, runCli } from "./cli.js";
+import { Memory, createMemory } from "./memory.js";
+
+/*
+system (System Prompt): Used to define the persona, tone, rules, and constraints for the AI before the conversation begins, ensuring the model acts according to specific guidelines. It is typically the first message.
+user (User Prompt): Represents the questions, requests, or instructions provided by the end-user.
+assistant (Model Response): Stores the AI's prior responses within a conversation, allowing for context retention. It can also be pre-filled by the developer to provide "few-shot" examples of how the assistant should respond.
+*/
 
 const controller = new AbortController();
 
@@ -76,10 +83,7 @@ async function runChatTask(
   console.log(`💬 Running chat task: ${task.id}`);
   const completion = await createChatCompletion(openai, {
     model,
-    messages: [
-      { role: "system", content: task.prompt },
-      { role: "user", content: task.description },
-    ],
+    messages: buildChatMessages(task),
   });
   console.log(completion.choices[0].message);
 }
@@ -95,20 +99,44 @@ function buildToolDefinition(tool: ToolDefinition): ChatCompletionTool {
   };
 }
 
-function buildMessages(task: AgentTask): ChatCompletionMessageParam[] {
+function buildMessages(memory: Memory): ChatCompletionMessageParam[] {
   const messages: ChatCompletionMessageParam[] = [];
 
   // Add context as system messages
-  for (const ctx of task.memory.context) {
+  for (const ctx of memory.getContext()) {
     messages.push({ role: "system", content: ctx });
   }
 
   // Add conversation history
-  for (const entry of task.memory.history) {
-    if (entry.role === "user" || entry.role === "assistant" || entry.role === "system") {
+  for (const entry of memory.getHistory()) {
+    messages.push({ role: entry.role, content: entry.content });
+  }
+
+  return messages;
+}
+
+function buildChatMessages(task: ChatTask): ChatCompletionMessageParam[] {
+  const messages: ChatCompletionMessageParam[] = [];
+
+  const memory = task.memory ? createMemory(task.memory) : undefined;
+
+  if (memory) {
+    for (const ctx of memory.getContext()) {
+      messages.push({ role: "system", content: ctx });
+    }
+  }
+  // Keep the task prompt close to the new user request for clearer intent.
+  messages.push({ role: "system", content: task.prompt });
+
+  if (memory) {
+    for (const entry of memory.getHistory()) {
       messages.push({ role: entry.role, content: entry.content });
     }
   }
+
+  // Always include the new user request, even if history ends with user.
+  // This keeps a simple start→finish workflow without mutating prior history.
+  messages.push({ role: "user", content: task.description });
 
   return messages;
 }
@@ -131,13 +159,29 @@ async function executeTool(toolCall: ToolCall): Promise<string> {
     return JSON.stringify({ error: `Invalid JSON arguments for tool ${name}` });
   }
 
-  // TODO: Implement actual tool execution based on tool name
-  // For now, return a stub response
   console.log(`  📞 Tool call: ${name}(${JSON.stringify(args)})`);
-  return JSON.stringify({
-    result: `Stub response for ${name}`,
-    args,
-  });
+
+  // Tool implementations
+  switch (name) {
+    case "fetchFoo": {
+      const id = args.id as string | undefined;
+      // Stub implementation - returns mock data
+      return JSON.stringify({
+        success: true,
+        data: {
+          id: id ?? "default",
+          name: "Foo Item",
+          value: 42,
+          timestamp: new Date().toISOString(),
+        },
+      });
+    }
+    default:
+      return JSON.stringify({
+        result: `Stub response for ${name}`,
+        args,
+      });
+  }
 }
 
 const MAX_AGENT_ITERATIONS = 10;
@@ -146,15 +190,22 @@ async function runAgentTask(
   openai: OpenAI,
   task: AgentTask,
   model: string
-): Promise<void> {
+): Promise<Memory> {
   console.log(`🤖 Running agent task: ${task.id}`);
 
+  const memory = createMemory(task.memory);
   const tools = [buildToolDefinition(task.tool)];
-  const messages = buildMessages(task);
+  const messages = buildMessages(memory);
 
-  if (messages.length === 0 || messages[messages.length - 1].role !== "user") {
-    console.log("  No user message in history, nothing to do.");
-    return;
+  if (!memory.endsWithUserMessage()) {
+    if (task.input) {
+      // Ensure we always have a user turn to kick off the agent loop.
+      memory.appendUser(task.input);
+      messages.push({ role: "user", content: task.input });
+    } else {
+      console.log("  No user message in history, nothing to do.");
+      return memory;
+    }
   }
 
   for (let i = 0; i < MAX_AGENT_ITERATIONS; i++) {
@@ -168,16 +219,20 @@ async function runAgentTask(
     const choice = completion.choices[0];
     if (!choice) {
       console.error("  No response from model");
-      return;
+      return memory;
     }
 
     const assistantMessage = choice.message;
     messages.push(assistantMessage);
+    if (assistantMessage.content) {
+      // Keep in-session memory updated without persisting it to disk.
+      memory.appendAssistant(assistantMessage.content);
+    }
 
-    // If no tool calls, we're done
+    // If no tool calls, we're done - save final response to memory
     if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
       console.log(`  Assistant: ${assistantMessage.content}`);
-      return;
+      return memory;
     }
 
     // Execute each tool call
@@ -196,6 +251,7 @@ async function runAgentTask(
   }
 
   console.log(`  Warning: Reached max iterations (${MAX_AGENT_ITERATIONS})`);
+  return memory;
 }
 
 async function runTask(

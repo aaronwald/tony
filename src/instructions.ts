@@ -1,12 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import type { MemoryConfig, MemoryEntry } from "./memory.js";
 
 export interface ChatTask {
   id: string;
   type: "chat";
   prompt: string;
   description: string;
+  memory?: MemoryConfig;
   model?: string;
 }
 
@@ -16,16 +18,16 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>;
 }
 
-export interface AgentMemory {
-  context: string[];
-  history: Array<{ role: string; content: string }>;
-}
+export type MessageRole = MemoryEntry["role"];
+
+export type AgentMemory = MemoryConfig;
 
 export interface AgentTask {
   id: string;
   type: "agent";
   tool: ToolDefinition;
   memory: AgentMemory;
+  input?: string;
   model?: string;
 }
 
@@ -50,6 +52,12 @@ function isToolDefinition(value: unknown): value is ToolDefinition {
   );
 }
 
+const VALID_ROLES: MessageRole[] = ["user", "assistant", "system"];
+
+function isValidRole(role: unknown): role is MessageRole {
+  return typeof role === "string" && VALID_ROLES.includes(role as MessageRole);
+}
+
 function isAgentMemory(value: unknown): value is AgentMemory {
   if (!value || typeof value !== "object") {
     return false;
@@ -69,7 +77,7 @@ function isAgentMemory(value: unknown): value is AgentMemory {
       return false;
     }
     const e = entry as Record<string, unknown>;
-    if (typeof e.role !== "string" || typeof e.content !== "string") {
+    if (!isValidRole(e.role) || typeof e.content !== "string") {
       return false;
     }
   }
@@ -86,6 +94,7 @@ function isChatTask(value: unknown): value is ChatTask {
     task.type === "chat" &&
     typeof task.prompt === "string" &&
     typeof task.description === "string" &&
+    (task.memory === undefined || isAgentMemory(task.memory)) &&
     (task.model === undefined || typeof task.model === "string")
   );
 }
@@ -100,6 +109,7 @@ function isAgentTask(value: unknown): value is AgentTask {
     task.type === "agent" &&
     isToolDefinition(task.tool) &&
     isAgentMemory(task.memory) &&
+    (task.input === undefined || typeof task.input === "string") &&
     (task.model === undefined || typeof task.model === "string")
   );
 }
@@ -129,6 +139,9 @@ function describeTaskError(value: unknown, index: number): string {
     if (typeof task.description !== "string") {
       return `tasks[${index}].description must be a string`;
     }
+    if (task.memory !== undefined && !isAgentMemory(task.memory)) {
+      return `tasks[${index}].memory must have context array and history array`;
+    }
   }
 
   if (task.type === "agent") {
@@ -137,6 +150,9 @@ function describeTaskError(value: unknown, index: number): string {
     }
     if (!isAgentMemory(task.memory)) {
       return `tasks[${index}].memory must have context array and history array`;
+    }
+    if (task.input !== undefined && typeof task.input !== "string") {
+      return `tasks[${index}].input must be a string`;
     }
   }
 
