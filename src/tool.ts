@@ -30,7 +30,7 @@ export async function executeTool(toolCall: ToolCall): Promise<string> {
     return JSON.stringify({ error: `Invalid JSON arguments for tool ${name}` });
   }
 
-  console.log(`  📞 Tool call: ${name}(${JSON.stringify(args)})`);
+  // console.log(`  📞 Tool call: ${name}(${JSON.stringify(args)})`);
 
   // Tool implementations
   switch (name) {

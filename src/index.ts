@@ -11,6 +11,7 @@ import { createCLI, addCommand, runCli } from "./cli.js";
 import { Memory, createMemory } from "./memory.js";
 import { ToolCall, executeTool, buildToolDefinition } from "./tool.js";
 import { assert } from "node:console";
+import { createChatCompletion, getOpenAIClient } from "./openai.js";
 
 /*
 system (System Prompt): Used to define the persona, tone, rules, and constraints for the AI before the conversation begins, ensuring the model acts according to specific guidelines. It is typically the first message.
@@ -18,61 +19,9 @@ user (User Prompt): Represents the questions, requests, or instructions provided
 assistant (Model Response): Stores the AI's prior responses within a conversation, allowing for context retention. It can also be pre-filled by the developer to provide "few-shot" examples of how the assistant should respond.
 */
 
-const controller = new AbortController();
-
-process.on("SIGINT", () => controller.abort());
-
 const DEFAULT_MODEL = "liquid/lfm-2.5-1.2b-thinking:free";
-const DEFAULT_OPEN_AI_URL = "https://openrouter.ai/api/v1";
-const MAX_RETRIES = 8;
-const RETRY_BASE_DELAY_MS = 500;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function getErrorStatus(error: unknown): number | undefined {
-  const err = error as { status?: number; statusCode?: number } | undefined;
-  return err?.status ?? err?.statusCode;
-}
-
-function shouldRetry(error: unknown): boolean {
-  const status = getErrorStatus(error);
-  return status === 429 || (typeof status === "number" && status >= 500);
-}
-
-function getOpenAIClient(): OpenAI {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    throw new Error("Missing OPENROUTER_API_KEY in environment.");
-  }
-  return new OpenAI({
-    baseURL: DEFAULT_OPEN_AI_URL,
-    apiKey: apiKey,
-  });
-}
-
-async function createChatCompletion(
-  openai: OpenAI,
-  params: Parameters<typeof openai.chat.completions.create>[0]
-): Promise<Awaited<ReturnType<typeof openai.chat.completions.create>>> {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await openai.chat.completions.create(params, {
-        signal: controller.signal,
-      });
-    } catch (error) {
-      attempt += 1;
-      if (attempt > MAX_RETRIES || !shouldRetry(error)) {
-        throw error;
-      }
-      const delay = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
-      console.warn(`Retrying request (attempt ${attempt}) after ${delay}ms...`);
-      await sleep(delay);
-    }
-  }
-}
+const MAX_AGENT_ITERATIONS = 10;
+const MAX_REPEATED_ASSISTANT_MESSAGES = 2;
 
 async function runChatTask(
   openai: OpenAI,
@@ -134,8 +83,6 @@ function buildChatMessages(task: ChatTask): ChatCompletionMessageParam[] {
   return messages;
 }
 
-const MAX_AGENT_ITERATIONS = 10;
-const MAX_REPEATED_ASSISTANT_MESSAGES = 2;
 
 function isLowValueAssistantMessage(content: string | null | undefined): boolean {
   if (!content) {
@@ -206,14 +153,13 @@ async function runAgentTask(
       return memory;
     }
 
-    if (isLowValueAssistantMessage(assistantMessage.content)) {
-      console.log("  Stopping: low-value assistant response detected.");
-      return memory;
-    }
-
     // If no tool calls, we're done - save final response to memory
     // Iterate til no more tools to do
     if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
+      if (isLowValueAssistantMessage(assistantMessage.content)) {
+        console.log("  Stopping: low-value assistant response detected.");
+        return memory;
+      }
       console.log(`  Assistant: ${assistantMessage.content}`);
       return memory;
     }
