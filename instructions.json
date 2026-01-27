@@ -1,23 +1,36 @@
-
 {
+  "defaultModel": "liquid/lfm-2.5-1.2b-thinking:free",
   "tasks": [
     {
       "id": "task1",
-      "description": "Complete the user registration form.",
-      "steps": [
-        "Go to the registration page.",
-        "Fill in your personal details.",
-        "Submit the form."
-      ]
+      "type": "chat",
+      "prompt": "You are a creative writing assistant.",
+      "description": "Write a short story about a robot learning to love."
     },
     {
       "id": "task2",
-      "description": "Set up your profile.",
-      "steps": [
-        "Upload a profile picture.",
-        "Add a bio.",
-        "Save your changes."
-      ]
+      "type": "agent",
+      "model": "openai/gpt-4o-mini",
+      "tool": {
+        "name": "search",
+        "description": "Search for information on a topic",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "The search query"
+            }
+          },
+          "required": ["query"]
+        }
+      },
+      "memory": {
+        "context": ["You are a helpful research assistant. Use the search tool to find information."],
+        "history": [
+          { "role": "user", "content": "Search for the latest news about AI safety." }
+        ]
+      }
     }
   ]
 }

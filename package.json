@@ -5,13 +5,15 @@
   "type": "module",
   "scripts": {
     "build": "bun build src/index.ts --outdir dist --target bun",
-    "start": "bun run dist/index.js"
+    "start": "bun run dist/index.js",
+    "compile": "bun build src/index.ts --compile --outfile tony"
   },
   "devDependencies": {
     "@types/node": "^25.0.10",
     "typescript": "^5.4.0"
   },
   "dependencies": {
+    "@openai/agents": "^0.4.3",
     "@openrouter/sdk": "^0.4.0",
     "openai": "^6.16.0",
     "openapi": "^1.0.1"
