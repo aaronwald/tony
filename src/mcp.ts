@@ -3,6 +3,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { MCPServerConfig } from "./instructions.js";
 
 const clientCache = new Map<string, Client>();
+const transportCache = new Map<string, StdioClientTransport>();
 
 function getServerKey(server: MCPServerConfig): string {
 	return server.name;
@@ -21,6 +22,7 @@ async function connectStdioServer(server: MCPServerConfig): Promise<Client> {
 	});
 	const client = new Client({ name: "tony", version: "0.1.0" });
 	await client.connect(transport);
+	transportCache.set(server.name, transport);
 	console.log(`✅ MCP connected: ${server.name}`);
 	return client;
 }
@@ -60,4 +62,28 @@ export async function callMcpTool(
 	const result = await client.callTool({ name: toolName, arguments: args });
 	console.log(`🔧 MCP result: ${JSON.stringify(result)}`);
 	return result;
+}
+
+export async function shutdownMcpClients(): Promise<void> {
+	for (const [name, client] of clientCache.entries()) {
+		try {
+			console.log(`🔌 MCP disconnect: ${name}`);
+			await client.close();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			console.warn(`⚠️ MCP disconnect failed for ${name}: ${message}`);
+		}
+	}
+
+	for (const [name, transport] of transportCache.entries()) {
+		try {
+			await transport.close();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Unknown error";
+			console.warn(`⚠️ MCP transport close failed for ${name}: ${message}`);
+		}
+	}
+
+	clientCache.clear();
+	transportCache.clear();
 }

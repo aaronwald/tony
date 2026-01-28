@@ -15,6 +15,7 @@ import {
 import { createCLI, addCommand, runCli } from "./cli.js";
 import { Memory, createMemory } from "./memory.js";
 import { ToolCall, executeTool, buildToolDefinition, listMcpTools } from "./tool.js";
+import { shutdownMcpClients } from "./mcp.js";
 import { createChatCompletion, getOpenAIClient } from "./openai.js";
 import type { Stream } from "openai/streaming";
 
@@ -249,6 +250,8 @@ async function runAgentTask(
   const messages = buildMessages(memory);
   let lastAssistantContent: string | undefined;
   let repeatedAssistantCount = 0;
+  let lastToolSignature: string | undefined;
+  let repeatedToolCalls = 0;
 
   if (!memory.endsWithUserMessage()) {
     if (task.input) {
@@ -313,10 +316,37 @@ async function runAgentTask(
       if (toolCall.type !== "function" || !("function" in toolCall)) {
         continue;
       }
+      const toolSignature = `${toolCall.function.name}:${toolCall.function.arguments}`;
+      if (toolSignature === lastToolSignature) {
+        repeatedToolCalls += 1;
+      } else {
+        repeatedToolCalls = 0;
+        lastToolSignature = toolSignature;
+      }
+
+      if (repeatedToolCalls >= 2) {
+        console.log("  Stopping: repeated tool call detected.");
+        return memory;
+      }
+
       const result = await executeTool(toolCall as ToolCall, {
         tools: toolDefinitions,
         mcpServers: task.mcpServers,
       });
+      try {
+        const parsed = JSON.parse(result) as Record<string, unknown>;
+        if (parsed.error) {
+          console.warn("  Tool error detected; stopping agent loop.");
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: result,
+          });
+          return memory;
+        }
+      } catch {
+        // Non-JSON tool output; continue
+      }
       messages.push({
         role: "tool",
         tool_call_id: toolCall.id,
@@ -526,15 +556,16 @@ addCommand(cli, {
         return cachedClient;
       };
 
-      for (const task of tasks) {
-        try {
+      try {
+        for (const task of tasks) {
           await runTask(task, model, getClient);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Unknown error";
-          console.error(`Task "${task.id}" (${task.type}) failed: ${message}`);
-          process.exitCode = 1;
-          return;
         }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        console.error(`Task failed: ${message}`);
+        process.exitCode = 1;
+      } finally {
+        await shutdownMcpClients();
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
