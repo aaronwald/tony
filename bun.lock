@@ -6,9 +6,9 @@
       "name": "tony",
       "dependencies": {
         "@openai/agents": "^0.4.3",
-        "@openrouter/sdk": "^0.4.0",
+        "@openrouter/sdk": "^0.5.1",
         "openai": "^6.16.0",
-        "openapi": "^1.0.1",
+        "openapi": "^1.0.0",
       },
       "devDependencies": {
         "@types/node": "^25.0.10",
@@ -35,7 +35,7 @@
 
     "@openai/agents-realtime": ["@openai/agents-realtime@0.4.3", "", { "dependencies": { "@openai/agents-core": "0.4.3", "@types/ws": "^8.18.1", "debug": "^4.4.0", "ws": "^8.18.1" }, "peerDependencies": { "zod": "^4.0.0" } }, "sha512-hfe69MfEM0KRN/auLzca7UlMl8mcNMhnIQfOb01R0SbFpU1yl332kQEZw3a2o+n9YRCVAmP6QKuJjejsZwqbvg=="],
 
-    "@openrouter/sdk": ["@openrouter/sdk@0.4.0", "", { "dependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-FKT6fT3LzIJA2UEXj9WVnNT74i5aeyz25YvjxfGMxu/lIuInpzkYkd7c7rZGQfMxXzq5d9syglrA4AVv08q0eQ=="],
+    "@openrouter/sdk": ["@openrouter/sdk@0.5.1", "", { "dependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-Kl0N1jIj7A3lnkM5dO3SGP8JP3jAozzs6JWcHVuZUBt5DsGKxFGNH1Y15bCfsJiLNA2ylAQpCN3aNcgEYkkL5Q=="],
 
     "@types/istanbul-lib-coverage": ["@types/istanbul-lib-coverage@2.0.6", "", {}, "sha512-2QF/t/auWm0lsy8XtKVPG19v3sSOQlJe/YHZgfjb/KBBHOGSV+J2q/S671rcq9uTBrLAXmZpqJiaQbMT+zNU1w=="],
 

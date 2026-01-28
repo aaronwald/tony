@@ -11,7 +11,8 @@
         "history": [
           { "role": "user", "content": "Start with a vivid scene in a quiet workshop." }
         ]
-      }
+      },
+      "outcome": "A short, original story in 2–3 paragraphs."
     },
     {
       "id": "task2",
@@ -39,7 +40,8 @@
           { "role": "assistant", "content": "Provide me with the ID of the Foo item you want to fetch." }
         ]
       },
-      "input": "Please fetch the Foo item with ID 'abc123' and tell me what you found."
+      "input": "Please fetch the Foo item with ID 'abc123' and tell me what you found.",
+      "outcome": "3 concise bullets with sources and a 1‑sentence takeaway."
     }
   ]
 }

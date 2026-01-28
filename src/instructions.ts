@@ -9,6 +9,7 @@ export interface ChatTask {
   prompt: string;
   description: string;
   memory?: MemoryConfig;
+  outcome?: string;
   model?: string;
 }
 
@@ -28,6 +29,7 @@ export interface AgentTask {
   tool: ToolDefinition;
   memory: AgentMemory;
   input?: string;
+  outcome?: string;
   model?: string;
 }
 
@@ -95,6 +97,7 @@ function isChatTask(value: unknown): value is ChatTask {
     typeof task.prompt === "string" &&
     typeof task.description === "string" &&
     (task.memory === undefined || isAgentMemory(task.memory)) &&
+    (task.outcome === undefined || typeof task.outcome === "string") &&
     (task.model === undefined || typeof task.model === "string")
   );
 }
@@ -110,6 +113,7 @@ function isAgentTask(value: unknown): value is AgentTask {
     isToolDefinition(task.tool) &&
     isAgentMemory(task.memory) &&
     (task.input === undefined || typeof task.input === "string") &&
+    (task.outcome === undefined || typeof task.outcome === "string") &&
     (task.model === undefined || typeof task.model === "string")
   );
 }
@@ -142,6 +146,9 @@ function describeTaskError(value: unknown, index: number): string {
     if (task.memory !== undefined && !isAgentMemory(task.memory)) {
       return `tasks[${index}].memory must have context array and history array`;
     }
+    if (task.outcome !== undefined && typeof task.outcome !== "string") {
+      return `tasks[${index}].outcome must be a string`;
+    }
   }
 
   if (task.type === "agent") {
@@ -153,6 +160,9 @@ function describeTaskError(value: unknown, index: number): string {
     }
     if (task.input !== undefined && typeof task.input !== "string") {
       return `tasks[${index}].input must be a string`;
+    }
+    if (task.outcome !== undefined && typeof task.outcome !== "string") {
+      return `tasks[${index}].outcome must be a string`;
     }
   }
 

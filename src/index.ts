@@ -38,12 +38,6 @@ type ToolCallAccumulator = {
   };
 };
 
-function isStreamResponse(
-  response: unknown
-): response is Stream<ChatCompletionChunk> {
-  return Boolean(response && (response as Stream<ChatCompletionChunk>)[Symbol.asyncIterator]);
-}
-
 function accumulateToolCalls(
   target: ToolCallAccumulator[],
   deltas: Array<{
@@ -112,6 +106,7 @@ async function consumeStream(
   return {
     role: "assistant",
     content: content.length > 0 ? content : null,
+    refusal: null,
     tool_calls: toolCalls.length > 0 ? (toolCalls as AssistantMessage["tool_calls"]) : undefined,
   };
 }
@@ -121,16 +116,8 @@ async function createAssistantMessage(
   params: Parameters<typeof openai.chat.completions.create>[0],
   label?: string
 ): Promise<AssistantMessage> {
-  const response = await createChatCompletion(openai, { ...params, stream: true });
-  if (isStreamResponse(response)) {
-    return consumeStream(response, label);
-  }
-  const message = response.choices[0].message;
-  if (label) {
-    process.stdout.write(label);
-    process.stdout.write(`${message.content ?? ""}\n`);
-  }
-  return message;
+  const stream = await createChatCompletion(openai, { ...params, stream: true });
+  return consumeStream(stream, label);
 }
 
 async function runChatTask(
@@ -138,7 +125,6 @@ async function runChatTask(
   task: ChatTask,
   model: string
 ): Promise<void> {
-  console.log(`💬 Running chat task: ${task.id}`);
   await createAssistantMessage(
     openai,
     {
