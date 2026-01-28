@@ -60,7 +60,9 @@ export async function createChatCompletion(
       if (attempt > MAX_RETRIES || !shouldRetry(error)) {
         throw error;
       }
-      const delay = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+      const baseDelay = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+      const jitter = 0.5 + Math.random();
+      const delay = Math.round(baseDelay * jitter);
       console.warn(`Retrying request (attempt ${attempt}) after ${delay}ms...`);
       await sleep(delay);
     }

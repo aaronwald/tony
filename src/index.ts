@@ -103,6 +103,10 @@ async function consumeStream(
     process.stdout.write("\n");
   }
 
+  if (content.length === 0 && toolCalls.length === 0) {
+    console.warn("  Warning: empty assistant response (possible refusal)." );
+  }
+
   return {
     role: "assistant",
     content: content.length > 0 ? content : null,
@@ -130,6 +134,7 @@ async function runChatTask(
     {
       model,
       messages: buildChatMessages(task),
+      ...buildGenerationParams(task),
     },
     "  🗨️  Assistant: "
   );
@@ -177,6 +182,15 @@ function buildChatMessages(task: ChatTask): ChatCompletionMessageParam[] {
   return messages;
 }
 
+function buildGenerationParams(task: ChatTask | AgentTask) {
+  return {
+    temperature: task.temperature,
+    top_p: task.top_p,
+    max_tokens: task.max_tokens,
+    seed: task.seed,
+  };
+}
+
 
 function isLowValueAssistantMessage(content: string | null | undefined): boolean {
   if (!content) {
@@ -221,6 +235,7 @@ async function runAgentTask(
         messages,
         tools,
         tool_choice: "auto",
+        ...buildGenerationParams(task),
       },
       "  🤖 Assistant: "
     );
@@ -259,7 +274,10 @@ async function runAgentTask(
       if (toolCall.type !== "function" || !("function" in toolCall)) {
         continue;
       }
-      const result = await executeTool(toolCall as ToolCall);
+      const result = await executeTool(toolCall as ToolCall, {
+        tools: [task.tool],
+        mcpServers: task.mcpServers,
+      });
       messages.push({
         role: "tool",
         tool_call_id: toolCall.id,

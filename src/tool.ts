@@ -1,5 +1,5 @@
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
-import type { ToolDefinition } from "./instructions.js";
+import type { MCPServerConfig, ToolDefinition } from "./instructions.js";
 import assert from "node:assert";
 
 export interface ToolCall {
@@ -8,6 +8,11 @@ export interface ToolCall {
     name: string;
     arguments: string;
   };
+}
+
+export interface ToolExecutionContext {
+  tools: ToolDefinition[];
+  mcpServers?: MCPServerConfig[];
 }
 
 export function buildToolDefinition(tool: ToolDefinition): ChatCompletionTool {
@@ -21,7 +26,59 @@ export function buildToolDefinition(tool: ToolDefinition): ChatCompletionTool {
   };
 }
 
-export async function executeTool(toolCall: ToolCall): Promise<string> {
+function validateToolArgs(
+  tool: ToolDefinition,
+  args: Record<string, unknown>
+): boolean {
+  // TODO: Validate args against tool.parameters JSON schema.
+  // For now, assume args are valid.
+  void tool;
+  void args;
+  return true;
+}
+
+function resolveToolDefinition(
+  name: string,
+  context: ToolExecutionContext
+): ToolDefinition | undefined {
+  return context.tools.find((tool) => tool.name === name);
+}
+
+function resolveMcpServer(
+  serverName: string,
+  context: ToolExecutionContext
+): MCPServerConfig | undefined {
+  return context.mcpServers?.find((server) => server.name === serverName);
+}
+
+async function executeMcpTool(
+  tool: ToolDefinition,
+  args: Record<string, unknown>,
+  context: ToolExecutionContext
+): Promise<string> {
+  if (!tool.mcpServer) {
+    return JSON.stringify({ error: `Tool ${tool.name} missing mcpServer` });
+  }
+
+  const server = resolveMcpServer(tool.mcpServer, context);
+  if (!server) {
+    return JSON.stringify({ error: `MCP server ${tool.mcpServer} not configured` });
+  }
+
+  // TODO: Connect to MCP server and execute tool.
+  return JSON.stringify({
+    success: false,
+    message: "MCP execution not implemented",
+    tool: tool.name,
+    server: server.name,
+    args,
+  });
+}
+
+export async function executeTool(
+  toolCall: ToolCall,
+  context: ToolExecutionContext
+): Promise<string> {
   const { name, arguments: argsJson } = toolCall.function;
   let args: Record<string, unknown>;
 
@@ -31,9 +88,22 @@ export async function executeTool(toolCall: ToolCall): Promise<string> {
     return JSON.stringify({ error: `Invalid JSON arguments for tool ${name}` });
   }
 
+  const toolDefinition = resolveToolDefinition(name, context);
+  if (!toolDefinition) {
+    return JSON.stringify({ error: `Unknown tool name: ${name}` });
+  }
+
+  if (!validateToolArgs(toolDefinition, args)) {
+    return JSON.stringify({ error: `Invalid arguments for tool ${name}` });
+  }
+
   // console.log(`  📞 Tool call: ${name}(${JSON.stringify(args)})`);
 
   // Tool implementations
+  if (toolDefinition.mcpServer) {
+    return executeMcpTool(toolDefinition, args, context);
+  }
+
   switch (name) {
     case "fetchFoo": {
       const id = args.id as string | undefined;
