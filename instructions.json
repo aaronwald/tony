@@ -2,28 +2,13 @@
   "defaultModel": "liquid/lfm-2.5-1.2b-thinking:free",
   "tasks": [
     {
-      "id": "task2",
+      "id": "fluxtask001",
       "type": "agent",
       "model": "openai/gpt-4o-mini",
-      "tool": {
-        "name": "fetchFoo",
-        "description": "Fetch a Foo item by its ID. Returns the item's name, value, and timestamp.",
-        "mcpServer": "flux",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "description": "The ID of the Foo item to fetch"
-            }
-          },
-          "required": ["id"]
-        }
-      },
       "memory": {
-        "context": ["You are a terse assistant. Use the fetchFoo tool to retrieve Foo items when asked."],
+        "context": ["You are a junior devops engineer working a kuberneetes clusters managed by flux"],
         "history": [
-          { "role": "assistant", "content": "Provide me with the ID of the Foo item you want to fetch." }
+          { "role": "assistant", "content": "We use flux mcp to check the status." }
         ]
       },
       "mcpServers": [
@@ -33,8 +18,9 @@
           "args": ["third_party/flux-mcp-server/dist/index.js"]
         }
       ],
-      "input": "Please fetch the Foo item with ID 'abc123' and tell me what you found.",
-      "outcome": "3 concise bullets with sources and a 1‑sentence takeaway."
+      "mcpTools": ["flux"],
+      "input": "Please check the status of all flux resources.",
+      "outcome": "A table with the status of each node."
     }
   ]
 }

@@ -10,6 +10,7 @@ import {
   Task,
   ChatTask,
   AgentTask,
+  ToolDefinition,
 } from "./instructions.js";
 import { createCLI, addCommand, runCli } from "./cli.js";
 import { Memory, createMemory } from "./memory.js";
@@ -66,6 +67,38 @@ function accumulateToolCalls(
         (target[index].function.arguments ?? "") + delta.function.arguments;
     }
   }
+}
+
+async function resolveTaskTools(task: AgentTask): Promise<ToolDefinition[]> {
+  const toolMap = new Map<string, ToolDefinition>();
+
+  if (task.tool) {
+    toolMap.set(task.tool.name, task.tool);
+  }
+
+  if (task.mcpTools && task.mcpServers) {
+    for (const serverName of task.mcpTools) {
+      const server = task.mcpServers.find((item) => item.name === serverName);
+      if (!server) {
+        console.warn(`  MCP server not configured: ${serverName}`);
+        continue;
+      }
+      const tools = await listMcpTools(server);
+      for (const tool of tools) {
+        if (toolMap.has(tool.name)) {
+          continue;
+        }
+        toolMap.set(tool.name, {
+          name: tool.name,
+          description: tool.description ?? "",
+          parameters: tool.parameters ?? { type: "object" },
+          mcpServer: serverName,
+        });
+      }
+    }
+  }
+
+  return Array.from(toolMap.values());
 }
 
 async function consumeStream(
@@ -211,7 +244,8 @@ async function runAgentTask(
   console.log(`🤖 Running agent task: ${task.id}`);
 
   const memory = createMemory(task.memory);
-  const tools = [buildToolDefinition(task.tool)];
+  const toolDefinitions = await resolveTaskTools(task);
+  const tools = toolDefinitions.length > 0 ? toolDefinitions.map(buildToolDefinition) : undefined;
   const messages = buildMessages(memory);
   let lastAssistantContent: string | undefined;
   let repeatedAssistantCount = 0;
@@ -234,7 +268,7 @@ async function runAgentTask(
         model,
         messages,
         tools,
-        tool_choice: "auto",
+        tool_choice: tools ? "auto" : undefined,
         ...buildGenerationParams(task),
       },
       "  🤖 Assistant: "
@@ -268,6 +302,11 @@ async function runAgentTask(
       return memory;
     }
 
+    if (toolDefinitions.length === 0) {
+      console.log("  Tool calls requested but no tool configured for this task.");
+      return memory;
+    }
+
     // Execute each tool call (Function)
     for (const toolCall of assistantMessage.tool_calls) {
       // Only handle function-type tool calls
@@ -275,7 +314,7 @@ async function runAgentTask(
         continue;
       }
       const result = await executeTool(toolCall as ToolCall, {
-        tools: [task.tool],
+        tools: toolDefinitions,
         mcpServers: task.mcpServers,
       });
       messages.push({
@@ -419,7 +458,11 @@ async function preflightTasks(tasks: Task[]): Promise<void> {
     if (!task.mcpServers) {
       continue;
     }
+    const filter = task.mcpTools && task.mcpTools.length > 0 ? new Set(task.mcpTools) : undefined;
     for (const server of task.mcpServers) {
+      if (filter && !filter.has(server.name)) {
+        continue;
+      }
       servers.set(server.name, server);
     }
   }

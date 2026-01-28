@@ -10,6 +10,7 @@ export interface ChatTask {
   description: string;
   memory?: MemoryConfig;
   outcome?: string;
+  mcpTools?: string[];
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
@@ -39,12 +40,12 @@ export type AgentMemory = MemoryConfig;
 export interface AgentTask {
   id: string;
   type: "agent";
-  tool: ToolDefinition;
+  tool?: ToolDefinition;
   memory: AgentMemory;
   input?: string;
   outcome?: string;
   mcpServers?: MCPServerConfig[];
-  mcpServers?: MCPServerConfig[];
+  mcpTools?: string[];
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
@@ -133,6 +134,7 @@ function isChatTask(value: unknown): value is ChatTask {
     (task.memory === undefined || isAgentMemory(task.memory)) &&
     (task.outcome === undefined || typeof task.outcome === "string") &&
     (task.mcpServers === undefined || task.mcpServers.every(isMcpServerConfig)) &&
+    (task.mcpTools === undefined || task.mcpTools.every((tool) => typeof tool === "string")) &&
     (task.temperature === undefined || typeof task.temperature === "number") &&
     (task.top_p === undefined || typeof task.top_p === "number") &&
     (task.max_tokens === undefined || typeof task.max_tokens === "number") &&
@@ -149,11 +151,12 @@ function isAgentTask(value: unknown): value is AgentTask {
   return (
     typeof task.id === "string" &&
     task.type === "agent" &&
-    isToolDefinition(task.tool) &&
+    (task.tool === undefined || isToolDefinition(task.tool)) &&
     isAgentMemory(task.memory) &&
     (task.input === undefined || typeof task.input === "string") &&
     (task.outcome === undefined || typeof task.outcome === "string") &&
     (task.mcpServers === undefined || task.mcpServers.every(isMcpServerConfig)) &&
+    (task.mcpTools === undefined || task.mcpTools.every((tool) => typeof tool === "string")) &&
     (task.temperature === undefined || typeof task.temperature === "number") &&
     (task.top_p === undefined || typeof task.top_p === "number") &&
     (task.max_tokens === undefined || typeof task.max_tokens === "number") &&
@@ -196,6 +199,9 @@ function describeTaskError(value: unknown, index: number): string {
     if (task.mcpServers !== undefined && !task.mcpServers.every(isMcpServerConfig)) {
       return `tasks[${index}].mcpServers must be an array of MCP server configs`;
     }
+    if (task.mcpTools !== undefined && !task.mcpTools.every((tool) => typeof tool === "string")) {
+      return `tasks[${index}].mcpTools must be an array of strings`;
+    }
     if (task.temperature !== undefined && typeof task.temperature !== "number") {
       return `tasks[${index}].temperature must be a number`;
     }
@@ -211,7 +217,7 @@ function describeTaskError(value: unknown, index: number): string {
   }
 
   if (task.type === "agent") {
-    if (!isToolDefinition(task.tool)) {
+    if (task.tool !== undefined && !isToolDefinition(task.tool)) {
       return `tasks[${index}].tool must have name, description, and parameters`;
     }
     if (!isAgentMemory(task.memory)) {
@@ -225,6 +231,9 @@ function describeTaskError(value: unknown, index: number): string {
     }
     if (task.mcpServers !== undefined && !task.mcpServers.every(isMcpServerConfig)) {
       return `tasks[${index}].mcpServers must be an array of MCP server configs`;
+    }
+    if (task.mcpTools !== undefined && !task.mcpTools.every((tool) => typeof tool === "string")) {
+      return `tasks[${index}].mcpTools must be an array of strings`;
     }
     if (task.temperature !== undefined && typeof task.temperature !== "number") {
       return `tasks[${index}].temperature must be a number`;

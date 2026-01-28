@@ -2,3 +2,4 @@ node_modules
 dist
 third_party/flux-mcp-server
 tony
+homelab.conf

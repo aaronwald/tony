@@ -94,6 +94,9 @@ export async function executeTool(
   const { name, arguments: argsJson } = toolCall.function;
   let args: Record<string, unknown>;
 
+  console.log(`  🧰 Tool call received: ${name}`);
+  console.log(`  🧰 Raw args: ${argsJson}`);
+
   try {
     args = JSON.parse(argsJson) as Record<string, unknown>;
   } catch {
@@ -102,10 +105,12 @@ export async function executeTool(
 
   const toolDefinition = resolveToolDefinition(name, context);
   if (!toolDefinition) {
+    console.warn(`  🧰 Unknown tool: ${name}`);
     return JSON.stringify({ error: `Unknown tool name: ${name}` });
   }
 
   if (!validateToolArgs(toolDefinition, args)) {
+    console.warn(`  🧰 Invalid args for tool: ${name}`);
     return JSON.stringify({ error: `Invalid arguments for tool ${name}` });
   }
 
@@ -113,6 +118,7 @@ export async function executeTool(
 
   // Tool implementations
   if (toolDefinition.mcpServer) {
+    console.log(`  🧰 Dispatching to MCP server: ${toolDefinition.mcpServer}`);
     return executeMcpTool(toolDefinition, args, context);
   }
 
@@ -120,7 +126,7 @@ export async function executeTool(
     case "fetchFoo": {
       const id = args.id as string | undefined;
       // Stub implementation - returns mock data
-      return JSON.stringify({
+      const response = JSON.stringify({
         success: true,
         data: {
           id: id ?? "default",
@@ -129,12 +135,16 @@ export async function executeTool(
           timestamp: new Date().toISOString(),
         },
       });
+      console.log(`  🧰 Tool response: ${response}`);
+      return response;
     }
     default:
       assert(false, `Unknown tool name: ${name}`);
-      return JSON.stringify({
+      const response = JSON.stringify({
         result: `Stub response for ${name}`,
         args,
       });
+      console.log(`  🧰 Tool response: ${response}`);
+      return response;
   }
 }
