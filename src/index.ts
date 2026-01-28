@@ -13,7 +13,7 @@ import {
 } from "./instructions.js";
 import { createCLI, addCommand, runCli } from "./cli.js";
 import { Memory, createMemory } from "./memory.js";
-import { ToolCall, executeTool, buildToolDefinition } from "./tool.js";
+import { ToolCall, executeTool, buildToolDefinition, listMcpTools } from "./tool.js";
 import { createChatCompletion, getOpenAIClient } from "./openai.js";
 import type { Stream } from "openai/streaming";
 
@@ -268,7 +268,7 @@ async function runAgentTask(
       return memory;
     }
 
-    // Execute each tool call
+    // Execute each tool call (Function)
     for (const toolCall of assistantMessage.tool_calls) {
       // Only handle function-type tool calls
       if (toolCall.type !== "function" || !("function" in toolCall)) {
@@ -317,6 +317,7 @@ interface RunArgs {
   file?: string;
   model?: string;
   taskId?: string;
+  preflight: boolean;
   showHelp: boolean;
   errors: string[];
 }
@@ -325,6 +326,7 @@ function parseRunArgs(args: string[]): RunArgs {
   let file: string | undefined;
   let model: string | undefined;
   let taskId: string | undefined;
+  let preflight = false;
   let showHelp = false;
   const errors: string[] = [];
 
@@ -332,6 +334,10 @@ function parseRunArgs(args: string[]): RunArgs {
     const arg = args[i];
     if (arg === "--help" || arg === "-h") {
       showHelp = true;
+      continue;
+    }
+    if (arg === "--preflight") {
+      preflight = true;
       continue;
     }
     if (arg === "--file" || arg === "-f") {
@@ -369,7 +375,7 @@ function parseRunArgs(args: string[]): RunArgs {
     }
   }
 
-  return { file, model, taskId, showHelp, errors };
+  return { file, model, taskId, preflight, showHelp, errors };
 }
 
 function filterTasks(
@@ -403,7 +409,37 @@ function printRunHelp(): void {
   console.log("  -f, --file <path>    Path to instructions JSON");
   console.log("  -m, --model <model>  Override model for all tasks");
   console.log("  -t, --task <id>      Run a single task by id");
+  console.log("  --preflight          List MCP tools before running");
   console.log("  -h, --help           Show this help message");
+}
+
+async function preflightTasks(tasks: Task[]): Promise<void> {
+  const servers = new Map<string, NonNullable<Task["mcpServers"]>[number]>();
+  for (const task of tasks) {
+    if (!task.mcpServers) {
+      continue;
+    }
+    for (const server of task.mcpServers) {
+      servers.set(server.name, server);
+    }
+  }
+
+  for (const server of servers.values()) {
+    console.log(`🔎 MCP preflight: ${server.name}`);
+    try {
+      const tools = await listMcpTools(server);
+      if (tools.length === 0) {
+        console.log("  (no tools returned)");
+        continue;
+      }
+      for (const tool of tools) {
+        console.log(`  - ${tool.name}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      console.error(`  Preflight failed: ${message}`);
+    }
+  }
 }
 
 addCommand(cli, {
@@ -411,7 +447,7 @@ addCommand(cli, {
   description: "Run tasks from instructions.json",
   action: async (args) => {
     try {
-      const { file, model: modelOverride, taskId, showHelp, errors } =
+      const { file, model: modelOverride, taskId, preflight, showHelp, errors } =
         parseRunArgs(args);
       if (showHelp) {
         printRunHelp();
@@ -434,6 +470,10 @@ addCommand(cli, {
 
       const { tasks, model: defaultModel } = filterTasks(instructions, taskId);
       const model = modelOverride ?? defaultModel;
+
+      if (preflight) {
+        await preflightTasks(tasks);
+      }
 
       let cachedClient: OpenAI | undefined;
       const getClient = () => {

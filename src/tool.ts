@@ -1,5 +1,6 @@
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import type { MCPServerConfig, ToolDefinition } from "./instructions.js";
+import { callMcpTool, listMcpTools as listMcpToolsInternal } from "./mcp.js";
 import assert from "node:assert";
 
 export interface ToolCall {
@@ -13,6 +14,12 @@ export interface ToolCall {
 export interface ToolExecutionContext {
   tools: ToolDefinition[];
   mcpServers?: MCPServerConfig[];
+}
+
+export interface McpToolInfo {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
 }
 
 export function buildToolDefinition(tool: ToolDefinition): ChatCompletionTool {
@@ -51,6 +58,17 @@ function resolveMcpServer(
   return context.mcpServers?.find((server) => server.name === serverName);
 }
 
+export async function listMcpTools(
+  server: MCPServerConfig
+): Promise<McpToolInfo[]> {
+  const response = await listMcpToolsInternal(server);
+  return response.tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.inputSchema,
+  }));
+}
+
 async function executeMcpTool(
   tool: ToolDefinition,
   args: Record<string, unknown>,
@@ -65,14 +83,8 @@ async function executeMcpTool(
     return JSON.stringify({ error: `MCP server ${tool.mcpServer} not configured` });
   }
 
-  // TODO: Connect to MCP server and execute tool.
-  return JSON.stringify({
-    success: false,
-    message: "MCP execution not implemented",
-    tool: tool.name,
-    server: server.name,
-    args,
-  });
+  const result = await callMcpTool(server, tool.name, args);
+  return JSON.stringify(result);
 }
 
 export async function executeTool(

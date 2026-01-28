@@ -2,19 +2,6 @@
   "defaultModel": "liquid/lfm-2.5-1.2b-thinking:free",
   "tasks": [
     {
-      "id": "task1",
-      "type": "chat",
-      "prompt": "You are a creative writing assistant.",
-      "description": "Write a short story about a robot learning to love.",
-      "memory": {
-        "context": ["Keep the tone warm and hopeful."],
-        "history": [
-          { "role": "user", "content": "Start with a vivid scene in a quiet workshop." }
-        ]
-      },
-      "outcome": "A short, original story in 2–3 paragraphs."
-    },
-    {
       "id": "task2",
       "type": "agent",
       "model": "openai/gpt-4o-mini",
@@ -36,15 +23,14 @@
       "memory": {
         "context": ["You are a terse assistant. Use the fetchFoo tool to retrieve Foo items when asked."],
         "history": [
-          { "role": "assistant", "content": "Provide me with the ID of the Foo item you want to fetch." },
-          { "role": "assistant", "content": "Provide me with the ID of the Foo item you want to fetch." },
           { "role": "assistant", "content": "Provide me with the ID of the Foo item you want to fetch." }
         ]
       },
       "mcpServers": [
         {
           "name": "flux",
-          "url": "http://localhost:8787"
+          "command": "node",
+          "args": ["third_party/flux-mcp-server/dist/index.js"]
         }
       ],
       "input": "Please fetch the Foo item with ID 'abc123' and tell me what you found.",
