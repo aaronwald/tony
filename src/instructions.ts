@@ -10,6 +10,7 @@ export interface ChatTask {
   description: string;
   memory?: MemoryConfig;
   outcome?: string;
+  mcpServers?: MCPServerConfig[];
   mcpTools?: string[];
   temperature?: number;
   top_p?: number;
@@ -95,6 +96,59 @@ function isValidRole(role: unknown): role is MessageRole {
   return typeof role === "string" && VALID_ROLES.includes(role as MessageRole);
 }
 
+/**
+ * Validates shared optional fields common to both ChatTask and AgentTask.
+ * Returns true if all shared fields are valid.
+ */
+function validateSharedTaskFields(task: Record<string, unknown>): boolean {
+  return (
+    (task.mcpServers === undefined ||
+      (Array.isArray(task.mcpServers) && task.mcpServers.every(isMcpServerConfig))) &&
+    (task.mcpTools === undefined ||
+      (Array.isArray(task.mcpTools) && task.mcpTools.every((tool) => typeof tool === "string"))) &&
+    (task.temperature === undefined || typeof task.temperature === "number") &&
+    (task.top_p === undefined || typeof task.top_p === "number") &&
+    (task.max_tokens === undefined || typeof task.max_tokens === "number") &&
+    (task.seed === undefined || typeof task.seed === "number") &&
+    (task.model === undefined || typeof task.model === "string")
+  );
+}
+
+/**
+ * Returns an error message for invalid shared fields, or undefined if all are valid.
+ */
+function describeSharedFieldError(
+  task: Record<string, unknown>,
+  index: number
+): string | undefined {
+  if (task.mcpServers !== undefined) {
+    if (!Array.isArray(task.mcpServers) || !task.mcpServers.every(isMcpServerConfig)) {
+      return `tasks[${index}].mcpServers must be an array of MCP server configs`;
+    }
+  }
+  if (task.mcpTools !== undefined) {
+    if (!Array.isArray(task.mcpTools) || !task.mcpTools.every((tool) => typeof tool === "string")) {
+      return `tasks[${index}].mcpTools must be an array of strings`;
+    }
+  }
+  if (task.temperature !== undefined && typeof task.temperature !== "number") {
+    return `tasks[${index}].temperature must be a number`;
+  }
+  if (task.top_p !== undefined && typeof task.top_p !== "number") {
+    return `tasks[${index}].top_p must be a number`;
+  }
+  if (task.max_tokens !== undefined && typeof task.max_tokens !== "number") {
+    return `tasks[${index}].max_tokens must be a number`;
+  }
+  if (task.seed !== undefined && typeof task.seed !== "number") {
+    return `tasks[${index}].seed must be a number`;
+  }
+  if (task.model !== undefined && typeof task.model !== "string") {
+    return `tasks[${index}].model must be a string`;
+  }
+  return undefined;
+}
+
 function isAgentMemory(value: unknown): value is AgentMemory {
   if (!value || typeof value !== "object") {
     return false;
@@ -133,13 +187,7 @@ function isChatTask(value: unknown): value is ChatTask {
     typeof task.description === "string" &&
     (task.memory === undefined || isAgentMemory(task.memory)) &&
     (task.outcome === undefined || typeof task.outcome === "string") &&
-    (task.mcpServers === undefined || task.mcpServers.every(isMcpServerConfig)) &&
-    (task.mcpTools === undefined || task.mcpTools.every((tool) => typeof tool === "string")) &&
-    (task.temperature === undefined || typeof task.temperature === "number") &&
-    (task.top_p === undefined || typeof task.top_p === "number") &&
-    (task.max_tokens === undefined || typeof task.max_tokens === "number") &&
-    (task.seed === undefined || typeof task.seed === "number") &&
-    (task.model === undefined || typeof task.model === "string")
+    validateSharedTaskFields(task)
   );
 }
 
@@ -155,13 +203,7 @@ function isAgentTask(value: unknown): value is AgentTask {
     isAgentMemory(task.memory) &&
     (task.input === undefined || typeof task.input === "string") &&
     (task.outcome === undefined || typeof task.outcome === "string") &&
-    (task.mcpServers === undefined || task.mcpServers.every(isMcpServerConfig)) &&
-    (task.mcpTools === undefined || task.mcpTools.every((tool) => typeof tool === "string")) &&
-    (task.temperature === undefined || typeof task.temperature === "number") &&
-    (task.top_p === undefined || typeof task.top_p === "number") &&
-    (task.max_tokens === undefined || typeof task.max_tokens === "number") &&
-    (task.seed === undefined || typeof task.seed === "number") &&
-    (task.model === undefined || typeof task.model === "string")
+    validateSharedTaskFields(task)
   );
 }
 
@@ -196,23 +238,9 @@ function describeTaskError(value: unknown, index: number): string {
     if (task.outcome !== undefined && typeof task.outcome !== "string") {
       return `tasks[${index}].outcome must be a string`;
     }
-    if (task.mcpServers !== undefined && !task.mcpServers.every(isMcpServerConfig)) {
-      return `tasks[${index}].mcpServers must be an array of MCP server configs`;
-    }
-    if (task.mcpTools !== undefined && !task.mcpTools.every((tool) => typeof tool === "string")) {
-      return `tasks[${index}].mcpTools must be an array of strings`;
-    }
-    if (task.temperature !== undefined && typeof task.temperature !== "number") {
-      return `tasks[${index}].temperature must be a number`;
-    }
-    if (task.top_p !== undefined && typeof task.top_p !== "number") {
-      return `tasks[${index}].top_p must be a number`;
-    }
-    if (task.max_tokens !== undefined && typeof task.max_tokens !== "number") {
-      return `tasks[${index}].max_tokens must be a number`;
-    }
-    if (task.seed !== undefined && typeof task.seed !== "number") {
-      return `tasks[${index}].seed must be a number`;
+    const sharedError = describeSharedFieldError(task, index);
+    if (sharedError) {
+      return sharedError;
     }
   }
 
@@ -229,23 +257,9 @@ function describeTaskError(value: unknown, index: number): string {
     if (task.outcome !== undefined && typeof task.outcome !== "string") {
       return `tasks[${index}].outcome must be a string`;
     }
-    if (task.mcpServers !== undefined && !task.mcpServers.every(isMcpServerConfig)) {
-      return `tasks[${index}].mcpServers must be an array of MCP server configs`;
-    }
-    if (task.mcpTools !== undefined && !task.mcpTools.every((tool) => typeof tool === "string")) {
-      return `tasks[${index}].mcpTools must be an array of strings`;
-    }
-    if (task.temperature !== undefined && typeof task.temperature !== "number") {
-      return `tasks[${index}].temperature must be a number`;
-    }
-    if (task.top_p !== undefined && typeof task.top_p !== "number") {
-      return `tasks[${index}].top_p must be a number`;
-    }
-    if (task.max_tokens !== undefined && typeof task.max_tokens !== "number") {
-      return `tasks[${index}].max_tokens must be a number`;
-    }
-    if (task.seed !== undefined && typeof task.seed !== "number") {
-      return `tasks[${index}].seed must be a number`;
+    const sharedError = describeSharedFieldError(task, index);
+    if (sharedError) {
+      return sharedError;
     }
   }
 

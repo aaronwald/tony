@@ -2,7 +2,6 @@ import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import type { MCPServerConfig, ToolDefinition } from "./instructions.js";
 import { callMcpTool, listMcpTools as listMcpToolsInternal } from "./mcp.js";
 import { audit, auditStep, auditWarn } from "./audit.js";
-import assert from "node:assert";
 
 export interface ToolCall {
   id: string;
@@ -140,12 +139,8 @@ export async function executeTool(
       return response;
     }
     default:
-      assert(false, `Unknown tool name: ${name}`);
-      const response = JSON.stringify({
-        result: `Stub response for ${name}`,
-        args,
-      });
-      await audit(`tool.response: ${name} -> ${response}`);
-      return response;
+      // Should never reach here - resolveToolDefinition already validates
+      await auditWarn(`tool.unhandled: ${name}`);
+      return JSON.stringify({ error: `Unhandled tool: ${name}` });
   }
 }

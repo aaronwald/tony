@@ -3,3 +3,4 @@ dist
 third_party/flux-mcp-server
 tony
 homelab.conf
+audit.log
