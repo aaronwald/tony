@@ -352,13 +352,15 @@ async function runAgentTask(
           return memory;
         }
       } catch {
-        // Non-JSON tool output; continue
+        // not an error, keep going
       }
       messages.push({
         role: "tool",
         tool_call_id: toolCall.id,
         content: result,
       });
+      // TODO Should tool calls form new memories?
+      // memory.appendToolResult(toolCall.function.name ?? "unknown", result);
     }
   }
 

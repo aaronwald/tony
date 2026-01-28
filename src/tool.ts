@@ -114,30 +114,12 @@ export async function executeTool(
     return JSON.stringify({ error: `Invalid arguments for tool ${name}` });
   }
 
-  // console.log(`  📞 Tool call: ${name}(${JSON.stringify(args)})`);
-
-  // Tool implementations
   if (toolDefinition.mcpServer) {
     await auditStep("tool.dispatch.mcp", `${toolDefinition.mcpServer}.${name}`);
     return executeMcpTool(toolDefinition, args, context);
   }
 
   switch (name) {
-    case "fetchFoo": {
-      const id = args.id as string | undefined;
-      // Stub implementation - returns mock data
-      const response = JSON.stringify({
-        success: true,
-        data: {
-          id: id ?? "default",
-          name: "Foo Item",
-          value: 42,
-          timestamp: new Date().toISOString(),
-        },
-      });
-      await audit(`tool.response: ${name} -> ${response}`);
-      return response;
-    }
     default:
       // Should never reach here - resolveToolDefinition already validates
       await auditWarn(`tool.unhandled: ${name}`);
