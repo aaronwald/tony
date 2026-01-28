@@ -6,20 +6,25 @@
       "type": "agent",
       "model": "openai/gpt-4o-mini",
       "memory": {
-        "context": ["You are a junior devops engineer working a kuberneetes clusters managed by flux"],
+        "context": ["You are a junior devops engineer working a kuberneetes clusters managed by flux and k8s"],
         "history": [
-          { "role": "assistant", "content": "We use flux mcp to check the status." }
+          { "role": "assistant", "content": "We use flux mcp to check the status." },
+          { "role": "assistant", "content": "Flux mcp also supports some kubectl commands that we can try." }
+
         ]
       },
       "mcpServers": [
         {
           "name": "flux",
           "command": "node",
-          "args": ["third_party/flux-mcp-server/dist/index.js"]
+          "args": ["third_party/flux-mcp-server/dist/index.js"],
+          "env": {
+             "KUBECONFIG": "/Users/aaronwald/repos/tony/homelab.conf"
+          }
         }
       ],
       "mcpTools": ["flux"],
-      "input": "Please check the status of all flux resources.",
+      "input": "Please check the status of all k8s resources.",
       "outcome": "A table with the status of each node."
     }
   ]

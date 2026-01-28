@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { MCPServerConfig } from "./instructions.js";
+import { audit, auditError, auditStep, auditWarn } from "./audit.js";
 
 const clientCache = new Map<string, Client>();
 const transportCache = new Map<string, StdioClientTransport>();
@@ -14,7 +15,7 @@ async function connectStdioServer(server: MCPServerConfig): Promise<Client> {
 		throw new Error(`MCP server ${server.name} missing command`);
 	}
 
-	console.log(`🔌 MCP connect: ${server.name}`);
+	await auditStep("mcp.connect", server.name);
 	const transport = new StdioClientTransport({
 		command: server.command,
 		args: server.args,
@@ -23,7 +24,7 @@ async function connectStdioServer(server: MCPServerConfig): Promise<Client> {
 	const client = new Client({ name: "tony", version: "0.1.0" });
 	await client.connect(transport);
 	transportCache.set(server.name, transport);
-	console.log(`✅ MCP connected: ${server.name}`);
+	await audit(`mcp.connected: ${server.name}`);
 	return client;
 }
 
@@ -44,10 +45,10 @@ async function getClient(server: MCPServerConfig): Promise<Client> {
 }
 
 export async function listMcpTools(server: MCPServerConfig) {
-	console.log(`🔎 MCP list tools: ${server.name}`);
+	await auditStep("mcp.listTools", server.name);
 	const client = await getClient(server);
 	const result = await client.listTools();
-	console.log(`🔎 MCP tools count: ${result.tools.length}`);
+	await audit(`mcp.tools.count: ${server.name} -> ${result.tools.length}`);
 	return result;
 }
 
@@ -56,22 +57,22 @@ export async function callMcpTool(
 	toolName: string,
 	args: Record<string, unknown>
 ) {
-	console.log(`🔧 MCP call: ${server.name}.${toolName}`);
-	console.log(`🔧 MCP args: ${JSON.stringify(args)}`);
+	await auditStep("mcp.call", `${server.name}.${toolName}`);
+	await audit(`mcp.args: ${server.name}.${toolName} -> ${JSON.stringify(args)}`);
 	const client = await getClient(server);
 	const result = await client.callTool({ name: toolName, arguments: args });
-	console.log(`🔧 MCP result: ${JSON.stringify(result)}`);
+	await audit(`mcp.result: ${server.name}.${toolName} -> ${JSON.stringify(result)}`);
 	return result;
 }
 
 export async function shutdownMcpClients(): Promise<void> {
 	for (const [name, client] of clientCache.entries()) {
 		try {
-			console.log(`🔌 MCP disconnect: ${name}`);
+			await auditStep("mcp.disconnect", name);
 			await client.close();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
-			console.warn(`⚠️ MCP disconnect failed for ${name}: ${message}`);
+			await auditWarn(`mcp.disconnect.failed: ${name} -> ${message}`);
 		}
 	}
 
@@ -80,10 +81,11 @@ export async function shutdownMcpClients(): Promise<void> {
 			await transport.close();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
-			console.warn(`⚠️ MCP transport close failed for ${name}: ${message}`);
+			await auditWarn(`mcp.transport.close.failed: ${name} -> ${message}`);
 		}
 	}
 
 	clientCache.clear();
 	transportCache.clear();
+	await audit("mcp.shutdown.complete");
 }

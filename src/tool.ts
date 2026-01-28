@@ -1,6 +1,7 @@
 import type { ChatCompletionTool } from "openai/resources/chat/completions";
 import type { MCPServerConfig, ToolDefinition } from "./instructions.js";
 import { callMcpTool, listMcpTools as listMcpToolsInternal } from "./mcp.js";
+import { audit, auditStep, auditWarn } from "./audit.js";
 import assert from "node:assert";
 
 export interface ToolCall {
@@ -94,8 +95,8 @@ export async function executeTool(
   const { name, arguments: argsJson } = toolCall.function;
   let args: Record<string, unknown>;
 
-  console.log(`  🧰 Tool call received: ${name}`);
-  console.log(`  🧰 Raw args: ${argsJson}`);
+  await auditStep("tool.call", name);
+  await audit(`tool.args.raw: ${name} -> ${argsJson}`);
 
   try {
     args = JSON.parse(argsJson) as Record<string, unknown>;
@@ -105,12 +106,12 @@ export async function executeTool(
 
   const toolDefinition = resolveToolDefinition(name, context);
   if (!toolDefinition) {
-    console.warn(`  🧰 Unknown tool: ${name}`);
+    await auditWarn(`tool.unknown: ${name}`);
     return JSON.stringify({ error: `Unknown tool name: ${name}` });
   }
 
   if (!validateToolArgs(toolDefinition, args)) {
-    console.warn(`  🧰 Invalid args for tool: ${name}`);
+    await auditWarn(`tool.args.invalid: ${name}`);
     return JSON.stringify({ error: `Invalid arguments for tool ${name}` });
   }
 
@@ -118,7 +119,7 @@ export async function executeTool(
 
   // Tool implementations
   if (toolDefinition.mcpServer) {
-    console.log(`  🧰 Dispatching to MCP server: ${toolDefinition.mcpServer}`);
+    await auditStep("tool.dispatch.mcp", `${toolDefinition.mcpServer}.${name}`);
     return executeMcpTool(toolDefinition, args, context);
   }
 
@@ -135,7 +136,7 @@ export async function executeTool(
           timestamp: new Date().toISOString(),
         },
       });
-      console.log(`  🧰 Tool response: ${response}`);
+      await audit(`tool.response: ${name} -> ${response}`);
       return response;
     }
     default:
@@ -144,7 +145,7 @@ export async function executeTool(
         result: `Stub response for ${name}`,
         args,
       });
-      console.log(`  🧰 Tool response: ${response}`);
+      await audit(`tool.response: ${name} -> ${response}`);
       return response;
   }
 }

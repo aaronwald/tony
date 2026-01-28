@@ -18,6 +18,7 @@ import { ToolCall, executeTool, buildToolDefinition, listMcpTools } from "./tool
 import { shutdownMcpClients } from "./mcp.js";
 import { createChatCompletion, getOpenAIClient } from "./openai.js";
 import type { Stream } from "openai/streaming";
+import { audit, auditError, auditStep, auditWarn } from "./audit.js";
 
 /*
 system (System Prompt): Used to define the persona, tone, rules, and constraints for the AI before the conversation begins, ensuring the model acts according to specific guidelines. It is typically the first message.
@@ -71,6 +72,7 @@ function accumulateToolCalls(
 }
 
 async function resolveTaskTools(task: AgentTask): Promise<ToolDefinition[]> {
+  await auditStep("resolve.tools", task.id);
   const toolMap = new Map<string, ToolDefinition>();
 
   if (task.tool) {
@@ -81,7 +83,7 @@ async function resolveTaskTools(task: AgentTask): Promise<ToolDefinition[]> {
     for (const serverName of task.mcpTools) {
       const server = task.mcpServers.find((item) => item.name === serverName);
       if (!server) {
-        console.warn(`  MCP server not configured: ${serverName}`);
+        await auditWarn(`mcp.server.missing: ${task.id} -> ${serverName}`);
         continue;
       }
       const tools = await listMcpTools(server);
@@ -108,6 +110,8 @@ async function consumeStream(
 ): Promise<AssistantMessage> {
   let content = "";
   const toolCalls: ToolCallAccumulator[] = [];
+
+  await auditStep("stream.start");
 
   if (label) {
     process.stdout.write(label);
@@ -138,7 +142,7 @@ async function consumeStream(
   }
 
   if (content.length === 0 && toolCalls.length === 0) {
-    console.warn("  Warning: empty assistant response (possible refusal)." );
+    await auditWarn("assistant.empty.response");
   }
 
   return {
@@ -154,6 +158,7 @@ async function createAssistantMessage(
   params: Parameters<typeof openai.chat.completions.create>[0],
   label?: string
 ): Promise<AssistantMessage> {
+  await auditStep("assistant.request");
   const stream = await createChatCompletion(openai, { ...params, stream: true });
   return consumeStream(stream, label);
 }
@@ -163,6 +168,7 @@ async function runChatTask(
   task: ChatTask,
   model: string
 ): Promise<void> {
+  await auditStep("chat.task.start", task.id);
   await createAssistantMessage(
     openai,
     {
@@ -242,7 +248,7 @@ async function runAgentTask(
   task: AgentTask,
   model: string
 ): Promise<Memory> {
-  console.log(`🤖 Running agent task: ${task.id}`);
+  await auditStep("agent.task.start", task.id);
 
   const memory = createMemory(task.memory);
   const toolDefinitions = await resolveTaskTools(task);
@@ -265,6 +271,7 @@ async function runAgentTask(
   }
 
   for (let i = 0; i < MAX_AGENT_ITERATIONS; i++) {
+    await auditStep("agent.iteration", `${task.id}#${i + 1}`);
     const assistantMessage = await createAssistantMessage(
       openai,
       {
@@ -290,7 +297,7 @@ async function runAgentTask(
     }
 
     if (repeatedAssistantCount >= MAX_REPEATED_ASSISTANT_MESSAGES) {
-      console.log("  Stopping: repeated assistant responses detected.");
+      await auditWarn(`agent.stop.repeated: ${task.id}`);
       return memory;
     }
 
@@ -298,15 +305,15 @@ async function runAgentTask(
     // Iterate til no more tools to do
     if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
       if (isLowValueAssistantMessage(assistantMessage.content)) {
-        console.log("  Stopping: low-value assistant response detected.");
+        await auditWarn(`agent.stop.lowValue: ${task.id}`);
         return memory;
       }
-      console.log(`  Assistant: ${assistantMessage.content}`);
+      await audit(`agent.complete: ${task.id}`);
       return memory;
     }
 
     if (toolDefinitions.length === 0) {
-      console.log("  Tool calls requested but no tool configured for this task.");
+      await auditWarn(`agent.stop.noTools: ${task.id}`);
       return memory;
     }
 
@@ -325,7 +332,7 @@ async function runAgentTask(
       }
 
       if (repeatedToolCalls >= 2) {
-        console.log("  Stopping: repeated tool call detected.");
+        await auditWarn(`agent.stop.repeatedTool: ${task.id}`);
         return memory;
       }
 
@@ -336,7 +343,7 @@ async function runAgentTask(
       try {
         const parsed = JSON.parse(result) as Record<string, unknown>;
         if (parsed.error) {
-          console.warn("  Tool error detected; stopping agent loop.");
+          await auditWarn(`agent.stop.toolError: ${task.id}`);
           messages.push({
             role: "tool",
             tool_call_id: toolCall.id,
@@ -356,6 +363,7 @@ async function runAgentTask(
   }
 
   console.log(`  Warning: Reached max iterations (${MAX_AGENT_ITERATIONS})`);
+  await auditWarn(`agent.stop.maxIterations: ${task.id}`);
   return memory;
 }
 
@@ -365,6 +373,7 @@ async function runTask(
   getClient: () => OpenAI
 ): Promise<void> {
   const model = task.model ?? defaultModel;
+  await auditStep("task.start", `${task.id}:${task.type}`);
 
   switch (task.type) {
     case "chat":
@@ -373,9 +382,9 @@ async function runTask(
     case "agent":
       const memory:Memory = await runAgentTask(getClient(), task, model);
       if (memory) {
-        console.log("  Final agent memory:");
+        await audit(`agent.memory.final: ${task.id}`);
         for (const entry of memory.getHistory()) {
-          console.log(`    [${entry.role}] ${entry.content}`);
+          await audit(`agent.memory.entry: ${task.id} [${entry.role}] ${entry.content}`);
         }
       }
       break;
@@ -498,19 +507,19 @@ async function preflightTasks(tasks: Task[]): Promise<void> {
   }
 
   for (const server of servers.values()) {
-    console.log(`🔎 MCP preflight: ${server.name}`);
+    await auditStep("mcp.preflight", server.name);
     try {
       const tools = await listMcpTools(server);
       if (tools.length === 0) {
-        console.log("  (no tools returned)");
+        await auditWarn(`mcp.preflight.empty: ${server.name}`);
         continue;
       }
       for (const tool of tools) {
-        console.log(`  - ${tool.name}`);
+        await audit(`mcp.tool: ${server.name}.${tool.name}`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      console.error(`  Preflight failed: ${message}`);
+      await auditError(`mcp.preflight.failed: ${server.name} -> ${message}`);
     }
   }
 }
