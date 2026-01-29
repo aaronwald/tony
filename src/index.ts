@@ -19,6 +19,7 @@ import { shutdownMcpClients } from "./mcp.js";
 import { createChatCompletion, getOpenAIClient } from "./openai.js";
 import type { Stream } from "openai/streaming";
 import { audit, auditError, auditStep, auditWarn } from "./audit.js";
+import { startSpinner } from "./spinner.js";
 
 /*
 system (System Prompt): Used to define the persona, tone, rules, and constraints for the AI before the conversation begins, ensuring the model acts according to specific guidelines. It is typically the first message.
@@ -26,7 +27,7 @@ user (User Prompt): Represents the questions, requests, or instructions provided
 assistant (Model Response): Stores the AI's prior responses within a conversation, allowing for context retention. It can also be pre-filled by the developer to provide "few-shot" examples of how the assistant should respond.
 */
 
-require('@dotenvx/dotenvx').config()
+require('@dotenvx/dotenvx').config({ quiet: true })
 
 
 const DEFAULT_MODEL = "liquid/lfm-2.5-1.2b-thinking:free";
@@ -156,14 +157,34 @@ async function consumeStream(
   };
 }
 
+const MAX_STREAM_RETRIES = 2;
+
 async function createAssistantMessage(
   openai: OpenAI,
   params: Parameters<typeof openai.chat.completions.create>[0],
   label?: string
 ): Promise<AssistantMessage> {
-  await auditStep("assistant.request");
-  const stream = await createChatCompletion(openai, { ...params, stream: true });
-  return consumeStream(stream, label);
+  for (let attempt = 0; attempt <= MAX_STREAM_RETRIES; attempt++) {
+    await auditStep("assistant.request");
+    const spinner = startSpinner("Waiting for model response...");
+    try {
+      const stream = await createChatCompletion(openai, { ...params, stream: true });
+      spinner.stop();
+      return await consumeStream(stream, label);
+    } catch (error) {
+      spinner.stop();
+      const isStreamIteratorBug =
+        error instanceof TypeError &&
+        error.message === "undefined is not a function" &&
+        error.stack?.includes("ReadableStreamAsyncIterator");
+      if (isStreamIteratorBug && attempt < MAX_STREAM_RETRIES) {
+        await auditWarn(`stream.retry: attempt ${attempt + 1} (Bun ReadableStream bug)`);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("Unreachable");
 }
 
 async function runChatTask(
@@ -339,13 +360,17 @@ async function runAgentTask(
         return memory;
       }
 
+      const toolName = toolCall.function.name;
+      const spinner = startSpinner(`Running tool: ${toolName}`);
       const result = await executeTool(toolCall as ToolCall, {
         tools: toolDefinitions,
         mcpServers: task.mcpServers,
       });
+      spinner.stop();
       try {
         const parsed = JSON.parse(result) as Record<string, unknown>;
         if (parsed.error) {
+          console.error(`  ✗ ${toolName}: ${parsed.error}`);
           await auditWarn(`agent.stop.toolError: ${task.id}`);
           messages.push({
             role: "tool",
@@ -513,18 +538,24 @@ async function preflightTasks(tasks: Task[]): Promise<void> {
 
   for (const server of servers.values()) {
     await auditStep("mcp.preflight", server.name);
+    const spinner = startSpinner(`Connecting to MCP server: ${server.name}`);
     try {
       const tools = await listMcpTools(server);
+      spinner.stop();
       if (tools.length === 0) {
+        console.error(`  ⚠ ${server.name}: no tools found`);
         await auditWarn(`mcp.preflight.empty: ${server.name}`);
         continue;
       }
+      console.log(`  ✓ ${server.name}: ${tools.length} tools`);
       for (const tool of tools) {
         await audit(`mcp.tool: ${server.name}.${tool.name}`);
       }
     } catch (error) {
+      spinner.stop();
       const message = error instanceof Error ? error.message : "Unknown error";
       const stack = error instanceof Error ? error.stack : undefined;
+      console.error(`  ✗ ${server.name}: ${message}`);
       await auditError(`mcp.preflight.failed: ${server.name} -> ${message}`);
       if (stack) {
         await auditError(`mcp.preflight.failed.stack: ${stack}`);

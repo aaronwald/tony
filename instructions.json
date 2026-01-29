@@ -8,9 +8,10 @@
       "memory": {
         "context": ["You are a junior devops engineer working a kuberneetes clusters managed by flux and k8s"],
         "history": [
-          { "role": "assistant", "content": "We use flux mcp to check the status." },
-          { "role": "assistant", "content": "Flux mcp also supports some kubectl commands that we can try." }
-
+          { "role": "assistant", "content": "We use flux mcp to check the status of kulster resources." },
+          { "role": "assistant", "content": "Flux mcp also supports some kubectl commands that we can try." },
+          { "role": "assistant", "content": "We have had a history of nodes rebooting." },
+          { "role": "assistant", "content": "We need to make sure all pods are healthy." }
         ]
       },
       "mcpServers": [
@@ -25,7 +26,7 @@
       ],
       "mcpTools": ["flux"],
       "input": "Please check the status of all k8s resources.",
-      "outcome": "A table with the status of each node."
+      "outcome": "A table with the status of each node. Please also suggest other tools or commands you would like to try."
     }
   ]
 }
