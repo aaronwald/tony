@@ -278,6 +278,9 @@ async function runAgentTask(
   const toolDefinitions = await resolveTaskTools(task);
   const tools = toolDefinitions.length > 0 ? toolDefinitions.map(buildToolDefinition) : undefined;
   const messages = buildMessages(memory);
+  if (task.outcome && task.outcome.trim().length > 0) {
+    messages.push({ role: "system", content: `Desired outcome: ${task.outcome}` });
+  }
   let lastAssistantContent: string | undefined;
   let repeatedAssistantCount = 0;
   let lastToolSignature: string | undefined;

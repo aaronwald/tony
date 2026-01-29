@@ -26,7 +26,7 @@
       ],
       "mcpTools": ["flux"],
       "input": "Please check the status of all k8s resources.",
-      "outcome": "A table with the status of each node. Please also suggest other tools or commands you would like to try."
+      "outcome": "A table with the status of each node. Please also list other TODOs for future improvements that would help improve this session."
     }
   ]
 }

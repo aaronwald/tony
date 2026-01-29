@@ -52,7 +52,11 @@ export async function createChatCompletion(
   let attempt = 0;
   while (true) {
     try {
-      return await openai.chat.completions.create(params, {
+      return await openai.chat.completions.create({
+        ...params,
+        // @ts-expect-error OpenRouter-specific: compress prompts that exceed context window
+        transforms: ["middle-out"],
+      }, {
         signal: controller.signal,
       });
     } catch (error) {
