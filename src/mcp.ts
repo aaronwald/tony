@@ -101,7 +101,11 @@ export async function callMcpTool(
 		return result;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "Unknown error";
+		const stack = error instanceof Error ? error.stack : undefined;
 		await auditError(`mcp.call.failed: ${server.name}.${toolName} -> ${message}`);
+		if (stack) {
+			await auditError(`mcp.call.failed.stack: ${stack}`);
+		}
 		return { error: `MCP tool call failed: ${message}` };
 	}
 }
@@ -113,7 +117,11 @@ export async function shutdownMcpClients(): Promise<void> {
 			await client.close();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
+			const stack = error instanceof Error ? error.stack : undefined;
 			await auditWarn(`mcp.disconnect.failed: ${name} -> ${message}`);
+			if (stack) {
+				await auditError(`mcp.disconnect.failed.stack: ${stack}`);
+			}
 		}
 	}
 
@@ -122,7 +130,11 @@ export async function shutdownMcpClients(): Promise<void> {
 			await transport.close();
 		} catch (error) {
 			const message = error instanceof Error ? error.message : "Unknown error";
+			const stack = error instanceof Error ? error.stack : undefined;
 			await auditWarn(`mcp.transport.close.failed: ${name} -> ${message}`);
+			if (stack) {
+				await auditError(`mcp.transport.close.failed.stack: ${stack}`);
+			}
 		}
 	}
 

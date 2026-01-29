@@ -13,8 +13,9 @@
     "typescript": "^5.4.0"
   },
   "dependencies": {
-    "@openai/agents": "^0.4.3",
+    "@dotenvx/dotenvx": "^1.52.0",
     "@modelcontextprotocol/sdk": "^1.25.2",
+    "@openai/agents": "^0.4.3",
     "@openrouter/sdk": "^0.5.1",
     "openai": "^6.16.0",
     "openapi": "^1.0.0"

@@ -26,6 +26,9 @@ user (User Prompt): Represents the questions, requests, or instructions provided
 assistant (Model Response): Stores the AI's prior responses within a conversation, allowing for context retention. It can also be pre-filled by the developer to provide "few-shot" examples of how the assistant should respond.
 */
 
+require('@dotenvx/dotenvx').config()
+
+
 const DEFAULT_MODEL = "liquid/lfm-2.5-1.2b-thinking:free";
 const MAX_AGENT_ITERATIONS = 10;
 const MAX_REPEATED_ASSISTANT_MESSAGES = 2;
@@ -521,7 +524,11 @@ async function preflightTasks(tasks: Task[]): Promise<void> {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
+      const stack = error instanceof Error ? error.stack : undefined;
       await auditError(`mcp.preflight.failed: ${server.name} -> ${message}`);
+      if (stack) {
+        await auditError(`mcp.preflight.failed.stack: ${stack}`);
+      }
     }
   }
 }
@@ -573,13 +580,27 @@ addCommand(cli, {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
+        const stack = error instanceof Error ? error.stack : undefined;
+        await auditError(`task.failed: ${message}`);
+        if (stack) {
+          await auditError(`task.failed.stack: ${stack}`);
+        }
         console.error(`Task failed: ${message}`);
+        if (stack) {
+          console.error(stack);
+        }
         process.exitCode = 1;
       } finally {
         await shutdownMcpClients();
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
+      const stack = error instanceof Error ? error.stack : undefined;
+      await auditError(`run.failed: ${message}`);
+      if (stack) {
+        await auditError(`run.failed.stack: ${stack}`);
+        console.error(stack);
+      }
       console.error(`Error: ${message}`);
       process.exitCode = 1;
     }
