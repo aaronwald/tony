@@ -30,6 +30,10 @@ import {
 } from "./audit.js";
 import { startSpinner } from "./spinner.js";
 import { appendStats } from "./stats.js";
+import { render } from "ink";
+import React from "react";
+import { App } from "./tui/app.js";
+import { loadOrScaffold, getFileMtime } from "./tui/hooks/fileOps.js";
 
 /*
 system (System Prompt): Used to define the persona, tone, rules, and constraints for the AI before the conversation begins, ensuring the model acts according to specific guidelines. It is typically the first message.
@@ -900,6 +904,32 @@ addCommand(cli, {
       console.error(`Error: ${message}`);
       process.exitCode = 1;
     }
+  },
+});
+
+addCommand(cli, {
+  name: "churn",
+  description: "Interactive TUI for editing instructions",
+  action: async (args: string[]) => {
+    let filePath = "instructions.json";
+    for (let i = 0; i < args.length; i++) {
+      if ((args[i] === "-f" || args[i] === "--file") && args[i + 1]) {
+        filePath = args[i + 1];
+        i++;
+      }
+    }
+    const { resolve } = await import("path");
+    const resolved = resolve(process.cwd(), filePath);
+    const instructions = await loadOrScaffold(resolved);
+    const mtime = getFileMtime(resolved);
+    const { waitUntilExit } = render(
+      React.createElement(App, {
+        initialInstructions: instructions,
+        filePath: resolved,
+        initialMtime: mtime,
+      })
+    );
+    await waitUntilExit();
   },
 });
 
