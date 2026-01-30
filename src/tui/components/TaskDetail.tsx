@@ -32,6 +32,31 @@ function getMemoryContextList(task: Task): string[] {
   return memory?.context ?? [];
 }
 
+function getMemoryHistoryList(task: Task): string[] {
+  const history = task.type === "agent"
+    ? task.memory.history ?? []
+    : (task as { memory?: { history?: Array<{ role: string; content: string }> } }).memory?.history ?? [];
+  return history.map((entry) => `${entry.role}: ${entry.content.replace(/\n/g, "\\n")}`);
+}
+
+function parseMemoryHistory(items: string[]): Array<{ role: "user" | "assistant" | "system"; content: string }> {
+  const validRoles = new Set(["user", "assistant", "system"] as const);
+  const parsed: Array<{ role: "user" | "assistant" | "system"; content: string }> = [];
+  for (const item of items) {
+    const splitIndex = item.indexOf(":");
+    if (splitIndex <= 0) {
+      continue;
+    }
+    const role = item.slice(0, splitIndex).trim() as "user" | "assistant" | "system";
+    if (!validRoles.has(role)) {
+      continue;
+    }
+    const content = item.slice(splitIndex + 1).trim().replace(/\\n/g, "\n");
+    parsed.push({ role, content });
+  }
+  return parsed;
+}
+
 function getMcpServerNames(task: Task): string[] {
   if (!task.mcpServers) return [];
   return task.mcpServers.map((s) => s.name).filter(Boolean);
@@ -100,6 +125,16 @@ function getFieldsForTask(task: Task): FieldDef[] {
       key: "memory.context",
       label: "Memory Context",
       getValue: (t) => getMemoryContextList(t).join(", "),
+      setValue: (_v) => null,
+      isList: true,
+    },
+    {
+      key: "memory.history",
+      label: "Memory History",
+      getValue: (t) => {
+        const count = getMemoryHistoryList(t).length;
+        return count > 0 ? `[${count} items]` : "";
+      },
       setValue: (_v) => null,
       isList: true,
     },
@@ -192,46 +227,14 @@ export function TaskDetail({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
-  const [listKey, setListKey] = useState<"memory.context" | "mcpTools" | "mcpServers" | null>(null);
+  const [listKey, setListKey] = useState<"memory.context" | "memory.history" | "mcpTools" | "mcpServers" | null>(null);
 
   const fields = getFieldsForTask(task);
   const currentField = fields[selectedIndex];
 
-  if (listKey) {
-    const items = listKey === "memory.context"
-      ? getMemoryContextList(task)
-      : listKey === "mcpTools"
-        ? getMcpToolsList(task)
-        : getMcpServerNames(task);
-
-    return (
-      <SubList
-        label={
-          listKey === "memory.context"
-            ? "Memory Context"
-            : listKey === "mcpTools"
-              ? "MCP Tools"
-              : "MCP Servers"
-        }
-        items={items}
-        onChange={(nextItems) => {
-          if (listKey === "memory.context") {
-            const history = task.memory?.history ?? [];
-            const nextMemory = { context: nextItems, history };
-            onUpdate({ memory: nextMemory } as Partial<Task>);
-          } else if (listKey === "mcpTools") {
-            onUpdate({ mcpTools: nextItems.length > 0 ? nextItems : undefined } as Partial<Task>);
-          } else {
-            onUpdate({ mcpServers: buildMcpServers(nextItems, task.mcpServers) } as Partial<Task>);
-          }
-        }}
-        onBack={() => setListKey(null)}
-      />
-    );
-  }
-
   useInput(
     (input, key) => {
+      if (listKey) return;
       if (editing) return;
 
       if (key.escape) {
@@ -262,8 +265,19 @@ export function TaskDetail({
             } as Partial<Task>);
           }
         } else if (currentField.isList) {
-          if (currentField.key === "memory.context" || currentField.key === "mcpTools" || currentField.key === "mcpServers") {
-            setListKey(currentField.key as "memory.context" | "mcpTools" | "mcpServers");
+          if (
+            currentField.key === "memory.context" ||
+            currentField.key === "memory.history" ||
+            currentField.key === "mcpTools" ||
+            currentField.key === "mcpServers"
+          ) {
+            setListKey(
+              currentField.key as
+                | "memory.context"
+                | "memory.history"
+                | "mcpTools"
+                | "mcpServers"
+            );
           }
         } else {
           setEditValue(currentField.getValue(task));
@@ -286,7 +300,50 @@ export function TaskDetail({
     setEditing(false);
   };
 
-  return (
+  const listItems = listKey === "memory.context"
+    ? getMemoryContextList(task)
+    : listKey === "memory.history"
+      ? getMemoryHistoryList(task)
+      : listKey === "mcpTools"
+        ? getMcpToolsList(task)
+        : getMcpServerNames(task);
+
+  return listKey ? (
+    <SubList
+      label={
+        listKey === "memory.context"
+          ? "Memory Context"
+          : listKey === "memory.history"
+            ? "Memory History"
+            : listKey === "mcpTools"
+              ? "MCP Tools"
+              : "MCP Servers"
+      }
+      items={listItems}
+      helpText={
+        listKey === "memory.history"
+          ? "Format: role: content (roles: user|assistant|system, use \\n for newlines)"
+          : undefined
+      }
+      onChange={(nextItems) => {
+        if (listKey === "memory.context") {
+          const history = task.memory?.history ?? [];
+          const nextMemory = { context: nextItems, history };
+          onUpdate({ memory: nextMemory } as Partial<Task>);
+        } else if (listKey === "memory.history") {
+          const contextItems = task.memory?.context ?? [];
+          const nextHistory = parseMemoryHistory(nextItems);
+          const nextMemory = { context: contextItems, history: nextHistory };
+          onUpdate({ memory: nextMemory } as Partial<Task>);
+        } else if (listKey === "mcpTools") {
+          onUpdate({ mcpTools: nextItems.length > 0 ? nextItems : undefined } as Partial<Task>);
+        } else {
+          onUpdate({ mcpServers: buildMcpServers(nextItems, task.mcpServers) } as Partial<Task>);
+        }
+      }}
+      onBack={() => setListKey(null)}
+    />
+  ) : (
     <Box flexDirection="column">
       <Box marginBottom={1}>
         <Text bold>Task: {task.id}</Text>

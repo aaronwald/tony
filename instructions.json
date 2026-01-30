@@ -6,25 +6,43 @@
       "type": "agent",
       "model": "openai/gpt-4o-mini",
       "memory": {
-        "context": ["You are a junior devops engineer working a kuberneetes clusters managed by flux and k8s"],
+        "context": [
+          "You are a junior devops engineer working a kuberneetes clusters managed by flux and k8s"
+        ],
         "history": [
-          { "role": "assistant", "content": "We use flux mcp to check the status of kulster resources." },
-          { "role": "assistant", "content": "Flux mcp also supports some kubectl commands that we can try." },
-          { "role": "assistant", "content": "We have had a history of nodes rebooting." },
-          { "role": "assistant", "content": "We need to make sure all pods are healthy." }
+          {
+            "role": "assistant",
+            "content": "We use flux mcp to check the status of kulster resources."
+          },
+          {
+            "role": "assistant",
+            "content": "Flux mcp also supports some kubectl commands that we can try."
+          },
+          {
+            "role": "assistant",
+            "content": "We have had a history of nodes rebooting."
+          },
+          {
+            "role": "assistant",
+            "content": "We need to make sure all pods are healthy."
+          }
         ]
       },
       "mcpServers": [
         {
           "name": "flux",
           "command": "node",
-          "args": ["third_party/flux-mcp-server/dist/index.js"],
+          "args": [
+            "third_party/flux-mcp-server/dist/index.js"
+          ],
           "env": {
-             "KUBECONFIG": "/Users/aaronwald/repos/tony/homelab.conf"
+            "KUBECONFIG": "/Users/aaronwald/repos/tony/homelab.conf"
           }
         }
       ],
-      "mcpTools": ["flux"],
+      "mcpTools": [
+        "flux"
+      ],
       "input": "Please check the status of  k8s resources in the ssmd namespace.",
       "outcome": "A summary table with the status of the cluster by resource type."
     }

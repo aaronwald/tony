@@ -7,9 +7,10 @@ interface SubListProps {
   items: string[];
   onChange: (items: string[]) => void;
   onBack: () => void;
+  helpText?: string;
 }
 
-export function SubList({ label, items, onChange, onBack }: SubListProps) {
+export function SubList({ label, items, onChange, onBack, helpText }: SubListProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [adding, setAdding] = useState(false);
   const [newValue, setNewValue] = useState("");
@@ -84,6 +85,7 @@ export function SubList({ label, items, onChange, onBack }: SubListProps) {
       <Box marginTop={1}>
         <Text dimColor>
           a add  d delete  j/k reorder  Escape back
+          {helpText ? `  |  ${helpText}` : ""}
         </Text>
       </Box>
     </Box>

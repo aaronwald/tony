@@ -24,6 +24,23 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function deepMerge(
+  base: Record<string, unknown>,
+  override: Record<string, unknown>
+): Record<string, unknown> {
+  const result = { ...base };
+  for (const key of Object.keys(override)) {
+    const baseVal = base[key];
+    const overVal = override[key];
+    if (isPlainObject(baseVal) && isPlainObject(overVal)) {
+      result[key] = deepMerge(baseVal, overVal);
+    } else {
+      result[key] = overVal;
+    }
+  }
+  return result;
+}
+
 function diffFieldsDeep(
   oldObj: Record<string, unknown>,
   newObj: Record<string, unknown>,
@@ -138,17 +155,23 @@ export async function executeCommand(
     }
 
     if (scope === "task" && context.currentTask) {
-      const updatedTask = parsed.json as Task;
+      const llmTask = parsed.json as Record<string, unknown>;
+      // Deep-merge LLM response onto existing task so omitted fields
+      // (like memory.context/history) are preserved from the original.
+      const mergedTask = deepMerge(
+        context.currentTask as unknown as Record<string, unknown>,
+        llmTask
+      ) as unknown as Task;
       parseInstructions(
-        JSON.stringify({ tasks: [updatedTask] }),
+        JSON.stringify({ tasks: [mergedTask] }),
         "command-mode"
       );
       const changed = diffFieldsDeep(
         context.currentTask as unknown as Record<string, unknown>,
-        updatedTask as unknown as Record<string, unknown>
+        mergedTask as unknown as Record<string, unknown>
       );
       return {
-        task: updatedTask,
+        task: mergedTask,
         explanation: parsed.explanation || "Task updated",
         changedFields: changed,
       };
