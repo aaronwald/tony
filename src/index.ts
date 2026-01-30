@@ -1,4 +1,5 @@
 import { OpenAI } from "openai";
+import { randomUUID } from "node:crypto";
 import type {
   ChatCompletion,
   ChatCompletionChunk,
@@ -13,13 +14,22 @@ import {
   ToolDefinition,
 } from "./instructions.js";
 import { createCLI, addCommand, runCli } from "./cli.js";
-import { Memory, createMemory } from "./memory.js";
+import { Memory, MemoryConfig, createMemory } from "./memory.js";
 import { ToolCall, executeTool, buildToolDefinition, listMcpTools } from "./tool.js";
 import { shutdownMcpClients } from "./mcp.js";
 import { createChatCompletion, getOpenAIClient } from "./openai.js";
 import type { Stream } from "openai/streaming";
-import { audit, auditError, auditStep, auditWarn } from "./audit.js";
+import {
+  audit,
+  auditError,
+  auditStep,
+  auditWarn,
+  getAuditContext,
+  popAuditContext,
+  pushAuditContext,
+} from "./audit.js";
 import { startSpinner } from "./spinner.js";
+import { appendStats } from "./stats.js";
 
 /*
 system (System Prompt): Used to define the persona, tone, rules, and constraints for the AI before the conversation begins, ensuring the model acts according to specific guidelines. It is typically the first message.
@@ -33,8 +43,26 @@ require('@dotenvx/dotenvx').config({ quiet: true })
 const DEFAULT_MODEL = "liquid/lfm-2.5-1.2b-thinking:free";
 const MAX_AGENT_ITERATIONS = 10;
 const MAX_REPEATED_ASSISTANT_MESSAGES = 2;
+const MAX_TASK_CHAIN_DEPTH = 3;
+let isShuttingDown = false;
+
+type TaskExecutionContext = {
+  tasksById: Map<string, Task>;
+  defaultModel: string;
+  getClient: () => OpenAI;
+  depth: number;
+  taskChain: Set<string>;
+};
 
 type AssistantMessage = ChatCompletion["choices"][number]["message"];
+
+type StreamUsage = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  cost?: number;
+  total_cost?: number;
+};
 
 type ToolCallAccumulator = {
   id?: string;
@@ -111,9 +139,10 @@ async function resolveTaskTools(task: AgentTask): Promise<ToolDefinition[]> {
 async function consumeStream(
   stream: Stream<ChatCompletionChunk>,
   label?: string
-): Promise<AssistantMessage> {
+): Promise<{ message: AssistantMessage; usage?: StreamUsage; model?: string }> {
   let content = "";
   let actualModel: string | undefined;
+  let usage: StreamUsage | undefined;
   const toolCalls: ToolCallAccumulator[] = [];
 
   await auditStep("stream.start");
@@ -126,6 +155,9 @@ async function consumeStream(
     if (!actualModel && chunk.model) {
       actualModel = chunk.model;
       await audit(`stream.model: ${actualModel}`);
+    }
+    if ((chunk as { usage?: StreamUsage }).usage) {
+      usage = (chunk as { usage?: StreamUsage }).usage;
     }
     const choice = chunk.choices[0];
     const delta = choice?.delta;
@@ -155,10 +187,14 @@ async function consumeStream(
   }
 
   return {
-    role: "assistant",
-    content: content.length > 0 ? content : null,
-    refusal: null,
-    tool_calls: toolCalls.length > 0 ? (toolCalls as AssistantMessage["tool_calls"]) : undefined,
+    message: {
+      role: "assistant",
+      content: content.length > 0 ? content : null,
+      refusal: null,
+      tool_calls: toolCalls.length > 0 ? (toolCalls as AssistantMessage["tool_calls"]) : undefined,
+    },
+    usage,
+    model: actualModel,
   };
 }
 
@@ -173,9 +209,31 @@ async function createAssistantMessage(
     await auditStep("assistant.request");
     const spinner = startSpinner("Waiting for model response...");
     try {
-      const stream = await createChatCompletion(openai, { ...params, stream: true });
+      const stream = await createChatCompletion(openai, {
+        ...params,
+        stream: true,
+        stream_options: { include_usage: true },
+      });
       spinner.stop();
-      return await consumeStream(stream, label);
+      const { message, usage, model } = await consumeStream(stream, label);
+      const context = getAuditContext();
+      const resolvedModel = model ?? (typeof params.model === "string" ? params.model : "unknown");
+      const cost = usage?.total_cost ?? usage?.cost;
+      try {
+        await appendStats({
+          timestamp: new Date().toISOString(),
+          model: resolvedModel,
+          promptTokens: usage?.prompt_tokens,
+          completionTokens: usage?.completion_tokens,
+          totalTokens: usage?.total_tokens,
+          cost,
+          context,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        await auditWarn(`stats.write.failed: ${message}`);
+      }
+      return message;
     } catch (error) {
       spinner.stop();
       const isStreamIteratorBug =
@@ -260,6 +318,50 @@ function buildGenerationParams(task: ChatTask | AgentTask) {
   };
 }
 
+function mergeMemoryConfigs(
+  base: MemoryConfig | undefined,
+  inherited: Memory
+): MemoryConfig {
+  const inheritedConfig = inherited.toConfig();
+  if (!base) {
+    return inheritedConfig;
+  }
+  return {
+    context: [...base.context, ...inheritedConfig.context],
+    history: [...base.history, ...inheritedConfig.history],
+  };
+}
+
+function applyInheritedMemory(task: Task, inherited: Memory): Task {
+  return {
+    ...task,
+    memory: mergeMemoryConfigs(task.memory, inherited),
+  };
+}
+
+function buildInvokeTaskTool(): ToolDefinition {
+  return {
+    name: "invoke_task",
+    description:
+      "Run another task by id and pass the current task memory into it.",
+    parameters: {
+      type: "object",
+      properties: {
+        taskId: {
+          type: "string",
+          description: "The id of the task to invoke.",
+        },
+        input: {
+          type: "string",
+          description:
+            "Optional input override (agent: input, chat: description).",
+        },
+      },
+      required: ["taskId"],
+    },
+  };
+}
+
 
 function isLowValueAssistantMessage(content: string | null | undefined): boolean {
   if (!content) {
@@ -272,15 +374,100 @@ function isLowValueAssistantMessage(content: string | null | undefined): boolean
   return false;
 }
 
+async function invokeTaskFromAgent(
+  toolCall: ToolCall,
+  memory: Memory,
+  context: TaskExecutionContext
+): Promise<string> {
+  const { arguments: argsJson } = toolCall.function;
+  let args: Record<string, unknown>;
+
+  await auditStep("tool.invoke_task");
+  await audit(`tool.invoke_task.args.raw: ${argsJson}`);
+
+  try {
+    args = JSON.parse(argsJson) as Record<string, unknown>;
+  } catch {
+    return JSON.stringify({ error: "Invalid JSON arguments for tool invoke_task" });
+  }
+
+  const taskId =
+    typeof args.taskId === "string"
+      ? args.taskId
+      : typeof args.id === "string"
+        ? args.id
+        : undefined;
+  if (!taskId) {
+    return JSON.stringify({ error: "invoke_task requires taskId" });
+  }
+
+  if (context.depth >= MAX_TASK_CHAIN_DEPTH) {
+    return JSON.stringify({
+      error: `Max task chain depth (${MAX_TASK_CHAIN_DEPTH}) reached`,
+    });
+  }
+
+  if (context.taskChain.has(taskId)) {
+    await auditWarn(`tool.invoke_task.cycle: ${taskId} (chain: ${[...context.taskChain].join(" -> ")} -> ${taskId})`);
+    return JSON.stringify({
+      error: `Cycle detected: task "${taskId}" is already in the call chain`,
+    });
+  }
+
+  const nextTask = context.tasksById.get(taskId);
+  if (!nextTask) {
+    return JSON.stringify({ error: `Task not found: ${taskId}` });
+  }
+
+  const inputOverride = typeof args.input === "string" ? args.input : undefined;
+  let taskToRun = nextTask;
+  if (inputOverride) {
+    if (nextTask.type === "agent") {
+      taskToRun = { ...nextTask, input: inputOverride };
+    } else {
+      taskToRun = { ...nextTask, description: inputOverride };
+    }
+  }
+
+  const nextChain = new Set(context.taskChain);
+  nextChain.add(taskId);
+
+  const nextContext: TaskExecutionContext = {
+    ...context,
+    depth: context.depth + 1,
+    taskChain: nextChain,
+  };
+
+  try {
+    const nextMemory = await runTask(taskToRun, nextContext, memory);
+    const lastEntry = nextMemory?.getLastEntry();
+
+    return JSON.stringify({
+      ok: true,
+      taskId,
+      lastMessage: lastEntry?.content ?? null,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    await auditError(`tool.invoke_task.failed: ${taskId} -> ${message}`);
+    return JSON.stringify({ error: `invoke_task failed: ${message}` });
+  }
+}
+
 async function runAgentTask(
   openai: OpenAI,
   task: AgentTask,
-  model: string
+  model: string,
+  context: TaskExecutionContext
 ): Promise<Memory> {
   await auditStep("agent.task.start", task.id);
 
   const memory = createMemory(task.memory);
-  const toolDefinitions = await resolveTaskTools(task);
+  const externalToolDefinitions = await resolveTaskTools(task);
+  const invokeTaskTool = buildInvokeTaskTool();
+  const toolDefinitions = externalToolDefinitions.some((tool) => tool.name === invokeTaskTool.name)
+    ? externalToolDefinitions
+    : [...externalToolDefinitions, invokeTaskTool];
   const tools = toolDefinitions.length > 0 ? toolDefinitions.map(buildToolDefinition) : undefined;
   const messages = buildMessages(memory);
   if (task.outcome && task.outcome.trim().length > 0) {
@@ -355,6 +542,19 @@ async function runAgentTask(
       if (toolCall.type !== "function" || !("function" in toolCall)) {
         continue;
       }
+      if (toolCall.function.name === "invoke_task") {
+        const result = await invokeTaskFromAgent(
+          toolCall as ToolCall,
+          memory,
+          context
+        );
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: result,
+        });
+        continue;
+      }
       const toolSignature = `${toolCall.function.name}:${toolCall.function.arguments}`;
       if (toolSignature === lastToolSignature) {
         repeatedToolCalls += 1;
@@ -371,7 +571,7 @@ async function runAgentTask(
       const toolName = toolCall.function.name;
       const spinner = startSpinner(`Running tool: ${toolName}`);
       const result = await executeTool(toolCall as ToolCall, {
-        tools: toolDefinitions,
+        tools: externalToolDefinitions,
         mcpServers: task.mcpServers,
       });
       spinner.stop();
@@ -407,26 +607,50 @@ async function runAgentTask(
 
 async function runTask(
   task: Task,
-  defaultModel: string,
-  getClient: () => OpenAI
-): Promise<void> {
-  const model = task.model ?? defaultModel;
+  context: TaskExecutionContext,
+  inheritedMemory?: Memory
+): Promise<Memory | undefined> {
+  const model = task.model ?? context.defaultModel;
   console.log(`  Model: ${model}`);
-  await auditStep("task.start", `${task.id}:${task.type}:${model}`);
+  const taskRunId = randomUUID();
+  await pushAuditContext({ taskId: task.id, taskRunId });
 
-  switch (task.type) {
-    case "chat":
-      await runChatTask(getClient(), task, model);
-      break;
-    case "agent":
-      const memory:Memory = await runAgentTask(getClient(), task, model);
-      if (memory) {
-        await audit(`agent.memory.final: ${task.id}`);
-        for (const entry of memory.getHistory()) {
-          await audit(`agent.memory.entry: ${task.id} [${entry.role}] ${entry.content}`);
+  try {
+    await auditStep("task.start", `${task.id}:${task.type}:${model}`);
+
+    const resolvedTask = inheritedMemory
+      ? applyInheritedMemory(task, inheritedMemory)
+      : task;
+
+    // Add current task to the chain so invoke_task can detect cycles
+    const activeContext: TaskExecutionContext = {
+      ...context,
+      taskChain: new Set([...context.taskChain, task.id]),
+    };
+
+    switch (resolvedTask.type) {
+      case "chat":
+        await runChatTask(activeContext.getClient(), resolvedTask, model);
+        return undefined;
+      case "agent":
+        const memory:Memory = await runAgentTask(
+          activeContext.getClient(),
+          resolvedTask,
+          model,
+          activeContext
+        );
+        if (memory) {
+          await audit(`agent.memory.final: ${resolvedTask.id}`);
+          for (const entry of memory.getHistory()) {
+            await audit(
+              `agent.memory.entry: ${resolvedTask.id} [${entry.role}] ${entry.content}`
+            );
+          }
         }
-      }
-      break;
+        return memory;
+    }
+  } finally {
+    await popAuditContext();
   }
 }
 
@@ -530,6 +754,25 @@ function printRunHelp(): void {
   console.log("  -h, --help           Show this help message");
 }
 
+function registerSignalHandlers(): void {
+  const handler = async (signal: NodeJS.Signals) => {
+    if (isShuttingDown) {
+      return;
+    }
+    isShuttingDown = true;
+    try {
+      await auditWarn(`signal.received: ${signal}`);
+      await shutdownMcpClients();
+    } finally {
+      process.exitCode = signal === "SIGINT" ? 130 : 1;
+      process.exit();
+    }
+  };
+
+  process.once("SIGINT", handler);
+  process.once("SIGTERM", handler);
+}
+
 async function preflightTasks(tasks: Task[]): Promise<void> {
   const servers = new Map<string, NonNullable<Task["mcpServers"]>[number]>();
   for (const task of tasks) {
@@ -578,6 +821,7 @@ addCommand(cli, {
   description: "Run tasks from instructions.json",
   action: async (args) => {
     try {
+      registerSignalHandlers();
       const { file, model: modelOverride, taskId, preflight, showHelp, errors } =
         parseRunArgs(args);
       if (showHelp) {
@@ -602,6 +846,9 @@ addCommand(cli, {
       const { tasks, model: defaultModel } = filterTasks(instructions, taskId);
       const model = modelOverride ?? defaultModel;
 
+      const runId = randomUUID();
+      await pushAuditContext({ runId });
+
       if (preflight) {
         await preflightTasks(tasks);
       }
@@ -613,10 +860,18 @@ addCommand(cli, {
         }
         return cachedClient;
       };
+      const tasksById = new Map(instructions.tasks.map((task) => [task.id, task]));
+      const taskContext: TaskExecutionContext = {
+        tasksById,
+        defaultModel: model,
+        getClient,
+        depth: 0,
+        taskChain: new Set(),
+      };
 
       try {
         for (const task of tasks) {
-          await runTask(task, model, getClient);
+          await runTask(task, taskContext);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
@@ -632,6 +887,7 @@ addCommand(cli, {
         process.exitCode = 1;
       } finally {
         await shutdownMcpClients();
+        await popAuditContext();
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
