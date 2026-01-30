@@ -16,6 +16,7 @@ import { executeCommand } from "./hooks/useCommandMode.js";
 import { TaskList } from "./components/TaskList.js";
 import { TaskDetail } from "./components/TaskDetail.js";
 import { CommandInput } from "./components/CommandInput.js";
+import { NewTaskPrompt } from "./components/NewTaskPrompt.js";
 
 type ViewState = "list" | "detail" | "command" | "newTask";
 
@@ -222,12 +223,22 @@ export function App({
       )}
 
       {view === "newTask" && (
-        <Box flexDirection="column">
-          <Text>New task prompt (TODO)</Text>
-          <Box marginTop={1}>
-            <Text dimColor>Press Escape to go back</Text>
-          </Box>
-        </Box>
+        <NewTaskPrompt
+          existingIds={state.instructions.tasks.map((t) => t.id)}
+          onConfirm={(id, type) => {
+            const newTask = type === "agent"
+              ? { id, type: "agent" as const, memory: { context: [] as string[], history: [] as Array<{role: string; content: string}> } }
+              : { id, type: "chat" as const, prompt: "", description: "" };
+            try {
+              setState((s) => addTask(s, newTask as any));
+              setSelectedTask(state.instructions.tasks.find((t) => t.id === id) ?? newTask as any);
+              setView("detail");
+            } catch (e) {
+              setView("list");
+            }
+          }}
+          onCancel={() => setView("list")}
+        />
       )}
     </Box>
   );
