@@ -5,6 +5,7 @@ import {
   addTask,
   deleteTask,
   undo,
+  reorderTask,
   type InstructionsState,
 } from "../useInstructions.js";
 import type { Instructions, AgentTask } from "../../../instructions.js";
@@ -112,5 +113,25 @@ describe("undo", () => {
       state = updateTask(state, "task1", { input: `change-${i}` });
     }
     expect(state.undoStack.length).toBe(50);
+  });
+});
+
+describe("reorderTask", () => {
+  it("moves a task down", () => {
+    const state = createInstructionsState(baseInstructions, "/tmp/test.json");
+    const withSecond = addTask(state, {
+      id: "task2",
+      type: "agent",
+      memory: { context: [], history: [] },
+    } as AgentTask);
+    const reordered = reorderTask(withSecond, 0, 1);
+    expect(reordered.instructions.tasks[0].id).toBe("task2");
+    expect(reordered.instructions.tasks[1].id).toBe("task1");
+  });
+
+  it("does nothing for invalid indices", () => {
+    const state = createInstructionsState(baseInstructions, "/tmp/test.json");
+    const same = reorderTask(state, -1, 0);
+    expect(same).toBe(state);
   });
 });

@@ -10,7 +10,8 @@ export function scaffoldInstructions(): Instructions {
 }
 
 export function saveInstructions(filePath: string, instructions: Instructions): void {
-  writeFileSync(filePath, JSON.stringify(instructions, null, 2) + "\n");
+  const validated = parseInstructions(JSON.stringify(instructions), filePath);
+  writeFileSync(filePath, JSON.stringify(validated, null, 2) + "\n");
 }
 
 export async function loadOrScaffold(filePath: string): Promise<Instructions> {

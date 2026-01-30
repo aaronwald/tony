@@ -9,6 +9,7 @@ import {
   undo,
   replaceInstructions,
   markSaved,
+  reorderTask,
   type InstructionsState,
 } from "./hooks/useInstructions.js";
 import { saveInstructions, getFileMtime } from "./hooks/fileOps.js";
@@ -39,6 +40,8 @@ export function App({
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [lastMtime, setLastMtime] = useState<number>(initialMtime);
   const [changedFields, setChangedFields] = useState<Set<string>>(new Set());
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [statusColor, setStatusColor] = useState<"red" | "green" | "yellow" | undefined>(undefined);
 
   // Command mode state
   const [cmdLoading, setCmdLoading] = useState(false);
@@ -60,15 +63,25 @@ export function App({
     try {
       const currentMtime = getFileMtime(filePath);
       if (currentMtime > lastMtime) {
-        setCmdError("File changed on disk. Save aborted (mtime conflict).");
+        setStatusMessage("File changed on disk. Save aborted (mtime conflict).");
+        setStatusColor("red");
         return;
       }
     } catch {
       // File might not exist yet, that's fine
     }
-    saveInstructions(filePath, state.instructions);
-    setLastMtime(getFileMtime(filePath));
-    setState((s) => markSaved(s));
+    try {
+      saveInstructions(filePath, state.instructions);
+      setLastMtime(getFileMtime(filePath));
+      setState((s) => markSaved(s));
+      setStatusMessage("Saved");
+      setStatusColor("green");
+      setTimeout(() => setStatusMessage(null), 1500);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Save failed";
+      setStatusMessage(message);
+      setStatusColor("red");
+    }
   }, [filePath, lastMtime, state.instructions]);
 
   const handleSelectTask = useCallback((task: Task) => {
@@ -83,6 +96,10 @@ export function App({
 
   const handleDeleteTask = useCallback((task: Task) => {
     setState((s) => deleteTask(s, task.id));
+  }, []);
+
+  const handleReorderTask = useCallback((fromIndex: number, toIndex: number) => {
+    setState((s) => reorderTask(s, fromIndex, toIndex));
   }, []);
 
   const handleCommandMode = useCallback(() => {
@@ -104,6 +121,9 @@ export function App({
       const newChanged = new Set(changedFields);
       for (const key of Object.keys(updates)) {
         newChanged.add(key);
+        if (key === "memory") {
+          newChanged.add("memory.context");
+        }
       }
       setChangedFields(newChanged);
       // Update the selected task reference
@@ -191,9 +211,12 @@ export function App({
         <TaskList
           instructions={state.instructions}
           dirty={state.dirty}
+          statusMessage={statusMessage}
+          statusColor={statusColor}
           onSelectTask={handleSelectTask}
           onNewTask={handleNewTask}
           onDeleteTask={handleDeleteTask}
+          onReorder={handleReorderTask}
           onCommandMode={handleCommandMode}
           onSave={handleSave}
           onQuit={handleQuit}
@@ -205,6 +228,8 @@ export function App({
           task={currentTask}
           defaultModel={state.instructions.defaultModel}
           changedFields={changedFields}
+          statusMessage={statusMessage}
+          statusColor={statusColor}
           onUpdate={handleTaskUpdate}
           onBack={handleBack}
           onCommandMode={handleCommandMode}
@@ -231,7 +256,7 @@ export function App({
               : { id, type: "chat" as const, prompt: "", description: "" };
             try {
               setState((s) => addTask(s, newTask as any));
-              setSelectedTask(state.instructions.tasks.find((t) => t.id === id) ?? newTask as any);
+              setSelectedTask(newTask as any);
               setView("detail");
             } catch (e) {
               setView("list");

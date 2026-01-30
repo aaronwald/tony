@@ -5,9 +5,12 @@ import type { Instructions, Task } from "../../instructions.js";
 export interface TaskListProps {
   instructions: Instructions;
   dirty: boolean;
+  statusMessage?: string | null;
+  statusColor?: "red" | "green" | "yellow";
   onSelectTask: (task: Task) => void;
   onNewTask: () => void;
   onDeleteTask: (task: Task) => void;
+  onReorder: (fromIndex: number, toIndex: number) => void;
   onCommandMode: () => void;
   onSave: () => void;
   onQuit: () => void;
@@ -28,9 +31,12 @@ function getTaskInput(task: Task): string {
 export function TaskList({
   instructions,
   dirty,
+  statusMessage,
+  statusColor,
   onSelectTask,
   onNewTask,
   onDeleteTask,
+  onReorder,
   onCommandMode,
   onSave,
   onQuit,
@@ -75,6 +81,12 @@ export function TaskList({
       if (tasks.length > 0) {
         setConfirmDelete(true);
       }
+    } else if (input === "j" && selectedIndex < tasks.length - 1) {
+      onReorder(selectedIndex, selectedIndex + 1);
+      setSelectedIndex((i) => Math.min(tasks.length - 1, i + 1));
+    } else if (input === "k" && selectedIndex > 0) {
+      onReorder(selectedIndex, selectedIndex - 1);
+      setSelectedIndex((i) => Math.max(0, i - 1));
     } else if (input === ":") {
       onCommandMode();
     } else if (input === "q") {
@@ -91,6 +103,12 @@ export function TaskList({
           Tony Churn {dirty ? <Text color="yellow">[unsaved]</Text> : null}
         </Text>
       </Box>
+
+      {statusMessage ? (
+        <Box marginBottom={1}>
+          <Text color={statusColor}>{statusMessage}</Text>
+        </Box>
+      ) : null}
 
       {tasks.length === 0 ? (
         <Text dimColor>No tasks. Press n to create one.</Text>
@@ -124,7 +142,7 @@ export function TaskList({
 
       <Box marginTop={1}>
         <Text dimColor>
-          Up/Down: navigate | Enter: edit | n: new | d: delete | :: command | Ctrl+S: save | q: quit
+          Up/Down: navigate | Enter: edit | n: new | d: delete | j/k: move | :: command | Ctrl+S: save | q: quit
         </Text>
       </Box>
     </Box>

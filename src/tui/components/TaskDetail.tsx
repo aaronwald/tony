@@ -1,12 +1,15 @@
 import React, { useState } from "react";
 import { Box, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
-import type { Task } from "../../instructions.js";
+import type { Task, MCPServerConfig } from "../../instructions.js";
+import { SubList } from "./SubList.js";
 
 export interface TaskDetailProps {
   task: Task;
   defaultModel?: string;
   changedFields?: Set<string>;
+  statusMessage?: string | null;
+  statusColor?: "red" | "green" | "yellow";
   onUpdate: (updates: Partial<Task>) => void;
   onBack: () => void;
   onCommandMode: () => void;
@@ -18,131 +21,170 @@ interface FieldDef {
   getValue: (task: Task) => string;
   setValue: (value: string) => Partial<Task> | null;
   isToggle?: boolean;
+  isList?: boolean;
 }
 
-function getMemoryContext(task: Task): string {
+function getMemoryContextList(task: Task): string[] {
   if (task.type === "agent") {
-    return task.memory.context.join("; ");
+    return task.memory.context ?? [];
   }
   const memory = (task as { memory?: { context?: string[] } }).memory;
-  return memory?.context?.join("; ") ?? "";
+  return memory?.context ?? [];
 }
 
-function getMcpServers(task: Task): string {
-  if (!task.mcpServers) return "";
-  return task.mcpServers.map((s) => s.name).join(", ");
+function getMcpServerNames(task: Task): string[] {
+  if (!task.mcpServers) return [];
+  return task.mcpServers.map((s) => s.name).filter(Boolean);
 }
 
-function getMcpTools(task: Task): string {
-  if (!task.mcpTools) return "";
-  return task.mcpTools.join(", ");
+function getMcpToolsList(task: Task): string[] {
+  if (!task.mcpTools) return [];
+  return task.mcpTools;
 }
 
-const FIELDS: FieldDef[] = [
-  {
-    key: "id",
-    label: "ID",
-    getValue: (t) => t.id,
-    setValue: (v) => (v.trim() ? { id: v.trim() } : null),
-  },
-  {
-    key: "type",
-    label: "Type",
-    getValue: (t) => t.type,
-    setValue: (_v) => null, // handled by toggle
-    isToggle: true,
-  },
-  {
-    key: "model",
-    label: "Model",
-    getValue: (t) => t.model ?? "",
-    setValue: (v) => ({ model: v.trim() || undefined }),
-  },
-  {
-    key: "input",
-    label: "Input",
-    getValue: (t) =>
-      t.type === "agent" ? t.input ?? "" : (t as { prompt?: string }).prompt ?? "",
-    setValue: (v) => ({ input: v } as Partial<Task>),
-  },
-  {
-    key: "outcome",
-    label: "Outcome",
-    getValue: (t) => {
-      if (t.type === "agent") return t.outcome ?? "";
-      return (t as { outcome?: string }).outcome ?? "";
+function getFieldsForTask(task: Task): FieldDef[] {
+  const fields: FieldDef[] = [
+    {
+      key: "id",
+      label: "ID",
+      getValue: (t) => t.id,
+      setValue: (v) => (v.trim() ? { id: v.trim() } : null),
     },
-    setValue: (v) => ({ outcome: v || undefined } as Partial<Task>),
-  },
-  {
-    key: "memory.context",
-    label: "Memory Context",
-    getValue: (t) => getMemoryContext(t),
-    setValue: (v) => {
-      const ctx = v
-        .split(";")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      return { memory: { context: ctx, history: [] } } as Partial<Task>;
+    {
+      key: "type",
+      label: "Type",
+      getValue: (t) => t.type,
+      setValue: (_v) => null, // handled by toggle
+      isToggle: true,
     },
-  },
-  {
-    key: "mcpServers",
-    label: "MCP Servers",
-    getValue: (t) => getMcpServers(t),
-    setValue: (_v) => null, // read-only display
-  },
-  {
-    key: "mcpTools",
-    label: "MCP Tools",
-    getValue: (t) => getMcpTools(t),
-    setValue: (v) => {
-      const tools = v
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-      return { mcpTools: tools.length > 0 ? tools : undefined } as Partial<Task>;
+    {
+      key: "model",
+      label: "Model",
+      getValue: (t) => t.model ?? "",
+      setValue: (v) => ({ model: v.trim() || undefined }),
     },
-  },
-  {
-    key: "temperature",
-    label: "Temperature",
-    getValue: (t) => (t.temperature !== undefined ? String(t.temperature) : ""),
-    setValue: (v) => {
-      if (v.trim() === "") return { temperature: undefined } as Partial<Task>;
-      const n = parseFloat(v);
-      if (isNaN(n) || n < 0 || n > 2) return null;
-      return { temperature: n } as Partial<Task>;
+  ];
+
+  if (task.type === "agent") {
+    fields.push({
+      key: "input",
+      label: "Input",
+      getValue: (t) => (t.type === "agent" ? t.input ?? "" : ""),
+      setValue: (v) => ({ input: v } as Partial<Task>),
+    });
+  } else {
+    fields.push(
+      {
+        key: "prompt",
+        label: "Prompt",
+        getValue: (t) => (t.type === "chat" ? t.prompt ?? "" : ""),
+        setValue: (v) => ({ prompt: v } as Partial<Task>),
+      },
+      {
+        key: "description",
+        label: "Description",
+        getValue: (t) => (t.type === "chat" ? t.description ?? "" : ""),
+        setValue: (v) => ({ description: v } as Partial<Task>),
+      }
+    );
+  }
+
+  fields.push(
+    {
+      key: "outcome",
+      label: "Outcome",
+      getValue: (t) => t.outcome ?? "",
+      setValue: (v) => ({ outcome: v || undefined } as Partial<Task>),
     },
-  },
-  {
-    key: "max_tokens",
-    label: "Max Tokens",
-    getValue: (t) => (t.max_tokens !== undefined ? String(t.max_tokens) : ""),
-    setValue: (v) => {
-      if (v.trim() === "") return { max_tokens: undefined } as Partial<Task>;
-      const n = parseInt(v, 10);
-      if (isNaN(n) || n < 1 || n > 128000) return null;
-      return { max_tokens: n } as Partial<Task>;
+    {
+      key: "memory.context",
+      label: "Memory Context",
+      getValue: (t) => getMemoryContextList(t).join(", "),
+      setValue: (_v) => null,
+      isList: true,
     },
-  },
-  {
-    key: "seed",
-    label: "Seed",
-    getValue: (t) => (t.seed !== undefined ? String(t.seed) : ""),
-    setValue: (v) => {
-      if (v.trim() === "") return { seed: undefined } as Partial<Task>;
-      const n = parseInt(v, 10);
-      if (isNaN(n)) return null;
-      return { seed: n } as Partial<Task>;
+    {
+      key: "mcpServers",
+      label: "MCP Servers",
+      getValue: (t) => getMcpServerNames(t).join(", "),
+      setValue: (_v) => null,
+      isList: true,
     },
-  },
-];
+    {
+      key: "mcpTools",
+      label: "MCP Tools",
+      getValue: (t) => getMcpToolsList(t).join(", "),
+      setValue: (_v) => null,
+      isList: true,
+    },
+    {
+      key: "temperature",
+      label: "Temperature",
+      getValue: (t) => (t.temperature !== undefined ? String(t.temperature) : ""),
+      setValue: (v) => {
+        if (v.trim() === "") return { temperature: undefined } as Partial<Task>;
+        const n = parseFloat(v);
+        if (isNaN(n) || n < 0 || n > 2) return null;
+        return { temperature: n } as Partial<Task>;
+      },
+    },
+    {
+      key: "top_p",
+      label: "Top P",
+      getValue: (t) => (t.top_p !== undefined ? String(t.top_p) : ""),
+      setValue: (v) => {
+        if (v.trim() === "") return { top_p: undefined } as Partial<Task>;
+        const n = parseFloat(v);
+        if (isNaN(n) || n < 0 || n > 1) return null;
+        return { top_p: n } as Partial<Task>;
+      },
+    },
+    {
+      key: "max_tokens",
+      label: "Max Tokens",
+      getValue: (t) => (t.max_tokens !== undefined ? String(t.max_tokens) : ""),
+      setValue: (v) => {
+        if (v.trim() === "") return { max_tokens: undefined } as Partial<Task>;
+        const n = parseInt(v, 10);
+        if (isNaN(n) || n < 1 || n > 128000) return null;
+        return { max_tokens: n } as Partial<Task>;
+      },
+    },
+    {
+      key: "seed",
+      label: "Seed",
+      getValue: (t) => (t.seed !== undefined ? String(t.seed) : ""),
+      setValue: (v) => {
+        if (v.trim() === "") return { seed: undefined } as Partial<Task>;
+        const n = parseInt(v, 10);
+        if (isNaN(n)) return null;
+        return { seed: n } as Partial<Task>;
+      },
+    }
+  );
+
+  return fields;
+}
+
+function isFieldChanged(fieldKey: string, changedFields?: Set<string>): boolean {
+  if (!changedFields) return false;
+  if (changedFields.has(fieldKey)) return true;
+  const base = fieldKey.split(".")[0];
+  return changedFields.has(base);
+}
+
+function buildMcpServers(names: string[], existing?: MCPServerConfig[]): MCPServerConfig[] | undefined {
+  if (names.length === 0) return undefined;
+  const existingByName = new Map((existing ?? []).map((s) => [s.name, s]));
+  return names.map((name) => existingByName.get(name) ?? { name });
+}
 
 export function TaskDetail({
   task,
   defaultModel,
   changedFields,
+  statusMessage,
+  statusColor,
   onUpdate,
   onBack,
   onCommandMode,
@@ -150,8 +192,43 @@ export function TaskDetail({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
+  const [listKey, setListKey] = useState<"memory.context" | "mcpTools" | "mcpServers" | null>(null);
 
-  const currentField = FIELDS[selectedIndex];
+  const fields = getFieldsForTask(task);
+  const currentField = fields[selectedIndex];
+
+  if (listKey) {
+    const items = listKey === "memory.context"
+      ? getMemoryContextList(task)
+      : listKey === "mcpTools"
+        ? getMcpToolsList(task)
+        : getMcpServerNames(task);
+
+    return (
+      <SubList
+        label={
+          listKey === "memory.context"
+            ? "Memory Context"
+            : listKey === "mcpTools"
+              ? "MCP Tools"
+              : "MCP Servers"
+        }
+        items={items}
+        onChange={(nextItems) => {
+          if (listKey === "memory.context") {
+            const history = task.memory?.history ?? [];
+            const nextMemory = { context: nextItems, history };
+            onUpdate({ memory: nextMemory } as Partial<Task>);
+          } else if (listKey === "mcpTools") {
+            onUpdate({ mcpTools: nextItems.length > 0 ? nextItems : undefined } as Partial<Task>);
+          } else {
+            onUpdate({ mcpServers: buildMcpServers(nextItems, task.mcpServers) } as Partial<Task>);
+          }
+        }}
+        onBack={() => setListKey(null)}
+      />
+    );
+  }
 
   useInput(
     (input, key) => {
@@ -162,7 +239,7 @@ export function TaskDetail({
       } else if (key.upArrow) {
         setSelectedIndex((i) => (i > 0 ? i - 1 : i));
       } else if (key.downArrow) {
-        setSelectedIndex((i) => (i < FIELDS.length - 1 ? i + 1 : i));
+        setSelectedIndex((i) => (i < fields.length - 1 ? i + 1 : i));
       } else if (key.return && currentField) {
         if (currentField.isToggle) {
           // Toggle type between agent and chat
@@ -170,15 +247,23 @@ export function TaskDetail({
           if (newType === "agent") {
             onUpdate({
               type: "agent",
-              memory: { context: [], history: [] },
-              input: (task as { prompt?: string }).prompt ?? "",
+              memory: task.memory ?? { context: [], history: [] },
+              input: task.type === "chat" ? task.prompt ?? "" : task.input ?? "",
+              prompt: undefined,
+              description: undefined,
             } as Partial<Task>);
           } else {
             onUpdate({
               type: "chat",
-              prompt: task.type === "agent" ? task.input ?? "" : "",
-              description: "",
+              prompt: task.type === "agent" ? task.input ?? "" : task.prompt ?? "",
+              description: task.type === "agent" ? "" : task.description ?? "",
+              tool: undefined,
+              input: undefined,
             } as Partial<Task>);
+          }
+        } else if (currentField.isList) {
+          if (currentField.key === "memory.context" || currentField.key === "mcpTools" || currentField.key === "mcpServers") {
+            setListKey(currentField.key as "memory.context" | "mcpTools" | "mcpServers");
           }
         } else {
           setEditValue(currentField.getValue(task));
@@ -193,18 +278,9 @@ export function TaskDetail({
 
   const handleEditSubmit = (value: string) => {
     if (currentField) {
-      // Special handling for "input" field based on task type
-      if (currentField.key === "input") {
-        if (task.type === "agent") {
-          onUpdate({ input: value } as Partial<Task>);
-        } else {
-          onUpdate({ prompt: value } as Partial<Task>);
-        }
-      } else {
-        const updates = currentField.setValue(value);
-        if (updates) {
-          onUpdate(updates);
-        }
+      const updates = currentField.setValue(value);
+      if (updates) {
+        onUpdate(updates);
       }
     }
     setEditing(false);
@@ -219,11 +295,18 @@ export function TaskDetail({
         ) : null}
       </Box>
 
-      {FIELDS.map((field, index) => {
+      {statusMessage ? (
+        <Box marginBottom={1}>
+          <Text color={statusColor}>{statusMessage}</Text>
+        </Box>
+      ) : null}
+
+      {fields.map((field, index) => {
         const isSelected = index === selectedIndex;
-        const isChanged = changedFields?.has(field.key) ?? false;
+        const isChanged = isFieldChanged(field.key, changedFields);
         const value = field.getValue(task);
         const isEditingThis = editing && isSelected;
+        const isList = field.isList;
 
         return (
           <Box key={field.key}>
@@ -246,7 +329,9 @@ export function TaskDetail({
               >
                 {field.isToggle
                   ? `${value} (Enter to toggle)`
-                  : value || "(empty)"}
+                  : isList
+                    ? (value || "(empty)") + " (Enter to edit)"
+                    : value || "(empty)"}
               </Text>
             )}
           </Box>

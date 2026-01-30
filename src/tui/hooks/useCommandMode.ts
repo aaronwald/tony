@@ -20,15 +20,34 @@ interface CommandContext {
   currentTask?: Task;
 }
 
-function diffFields(
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function diffFieldsDeep(
   oldObj: Record<string, unknown>,
-  newObj: Record<string, unknown>
+  newObj: Record<string, unknown>,
+  prefix = ""
 ): string[] {
   const keys = new Set([...Object.keys(oldObj), ...Object.keys(newObj)]);
   const changed: string[] = [];
   for (const key of keys) {
-    if (JSON.stringify(oldObj[key]) !== JSON.stringify(newObj[key])) {
-      changed.push(key);
+    const path = prefix ? `${prefix}.${key}` : key;
+    const oldVal = oldObj[key];
+    const newVal = newObj[key];
+
+    if (isPlainObject(oldVal) && isPlainObject(newVal)) {
+      changed.push(...diffFieldsDeep(oldVal, newVal, path));
+      continue;
+    }
+    if (Array.isArray(oldVal) || Array.isArray(newVal)) {
+      if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+        changed.push(path);
+      }
+      continue;
+    }
+    if (oldVal !== newVal) {
+      changed.push(path);
     }
   }
   return changed;
@@ -120,7 +139,11 @@ export async function executeCommand(
 
     if (scope === "task" && context.currentTask) {
       const updatedTask = parsed.json as Task;
-      const changed = diffFields(
+      parseInstructions(
+        JSON.stringify({ tasks: [updatedTask] }),
+        "command-mode"
+      );
+      const changed = diffFieldsDeep(
         context.currentTask as unknown as Record<string, unknown>,
         updatedTask as unknown as Record<string, unknown>
       );
@@ -133,7 +156,7 @@ export async function executeCommand(
       // Global scope: parse the full instructions
       const raw = JSON.stringify(parsed.json);
       const updatedInstructions = parseInstructions(raw, "command-mode");
-      const changed = diffFields(
+      const changed = diffFieldsDeep(
         context.instructions as unknown as Record<string, unknown>,
         updatedInstructions as unknown as Record<string, unknown>
       );

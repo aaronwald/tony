@@ -67,6 +67,24 @@ export function deleteTask(state: InstructionsState, taskId: string): Instructio
   return pushUndo(state, next);
 }
 
+export function reorderTask(
+  state: InstructionsState,
+  fromIndex: number,
+  toIndex: number
+): InstructionsState {
+  const tasks = [...state.instructions.tasks];
+  if (fromIndex < 0 || fromIndex >= tasks.length) return state;
+  if (toIndex < 0 || toIndex >= tasks.length) return state;
+  if (fromIndex === toIndex) return state;
+  const [moved] = tasks.splice(fromIndex, 1);
+  tasks.splice(toIndex, 0, moved);
+  const next: Instructions = {
+    ...state.instructions,
+    tasks,
+  };
+  return pushUndo(state, next);
+}
+
 export function undo(state: InstructionsState): InstructionsState {
   if (state.undoStack.length === 0) return state;
   const [prev, ...rest] = state.undoStack;

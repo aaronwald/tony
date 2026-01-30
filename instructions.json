@@ -26,7 +26,7 @@
       ],
       "mcpTools": ["flux"],
       "input": "Please check the status of  k8s resources in the ssmd namespace.",
-      "outcome": "A table with the status of each node."
+      "outcome": "A summary table with the status of the cluster by resource type."
     }
   ]
 }
