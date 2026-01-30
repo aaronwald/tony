@@ -52,7 +52,11 @@ export async function createChatCompletion(
   let attempt = 0;
   while (true) {
     try {
-      return await openai.chat.completions.create(params, {
+      return await openai.chat.completions.create({
+        ...params,
+        // @ts-expect-error OpenRouter-specific: compress prompts that exceed context window
+        transforms: ["middle-out"],
+      }, {
         signal: controller.signal,
       });
     } catch (error) {
@@ -60,7 +64,9 @@ export async function createChatCompletion(
       if (attempt > MAX_RETRIES || !shouldRetry(error)) {
         throw error;
       }
-      const delay = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+      const baseDelay = RETRY_BASE_DELAY_MS * 2 ** (attempt - 1);
+      const jitter = 0.5 + Math.random();
+      const delay = Math.round(baseDelay * jitter);
       console.warn(`Retrying request (attempt ${attempt}) after ${delay}ms...`);
       await sleep(delay);
     }

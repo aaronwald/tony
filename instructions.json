@@ -2,46 +2,31 @@
   "defaultModel": "liquid/lfm-2.5-1.2b-thinking:free",
   "tasks": [
     {
-      "id": "task1",
-      "type": "chat",
-      "prompt": "You are a creative writing assistant.",
-      "description": "Write a short story about a robot learning to love.",
-      "memory": {
-        "context": ["Keep the tone warm and hopeful."],
-        "history": [
-          { "role": "user", "content": "Start with a vivid scene in a quiet workshop." }
-        ]
-      },
-      "outcome": "A short, original story in 2–3 paragraphs."
-    },
-    {
-      "id": "task2",
+      "id": "fluxtask001",
       "type": "agent",
       "model": "openai/gpt-4o-mini",
-      "tool": {
-        "name": "fetchFoo",
-        "description": "Fetch a Foo item by its ID. Returns the item's name, value, and timestamp.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "string",
-              "description": "The ID of the Foo item to fetch"
-            }
-          },
-          "required": ["id"]
-        }
-      },
       "memory": {
-        "context": ["You are a terse assistant. Use the fetchFoo tool to retrieve Foo items when asked."],
+        "context": ["You are a junior devops engineer working a kuberneetes clusters managed by flux and k8s"],
         "history": [
-          { "role": "assistant", "content": "Provide me with the ID of the Foo item you want to fetch." },
-          { "role": "assistant", "content": "Provide me with the ID of the Foo item you want to fetch." },
-          { "role": "assistant", "content": "Provide me with the ID of the Foo item you want to fetch." }
+          { "role": "assistant", "content": "We use flux mcp to check the status of kulster resources." },
+          { "role": "assistant", "content": "Flux mcp also supports some kubectl commands that we can try." },
+          { "role": "assistant", "content": "We have had a history of nodes rebooting." },
+          { "role": "assistant", "content": "We need to make sure all pods are healthy." }
         ]
       },
-      "input": "Please fetch the Foo item with ID 'abc123' and tell me what you found.",
-      "outcome": "3 concise bullets with sources and a 1‑sentence takeaway."
+      "mcpServers": [
+        {
+          "name": "flux",
+          "command": "node",
+          "args": ["third_party/flux-mcp-server/dist/index.js"],
+          "env": {
+             "KUBECONFIG": "/Users/aaronwald/repos/tony/homelab.conf"
+          }
+        }
+      ],
+      "mcpTools": ["flux"],
+      "input": "Please check the status of  k8s resources in the ssmd namespace.",
+      "outcome": "A table with the status of each node."
     }
   ]
 }

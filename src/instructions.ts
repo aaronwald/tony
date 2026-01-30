@@ -10,6 +10,12 @@ export interface ChatTask {
   description: string;
   memory?: MemoryConfig;
   outcome?: string;
+  mcpServers?: MCPServerConfig[];
+  mcpTools?: string[];
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  seed?: number;
   model?: string;
 }
 
@@ -17,6 +23,15 @@ export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  mcpServer?: string;
+}
+
+export interface MCPServerConfig {
+  name: string;
+  url?: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
 }
 
 export type MessageRole = MemoryEntry["role"];
@@ -26,10 +41,16 @@ export type AgentMemory = MemoryConfig;
 export interface AgentTask {
   id: string;
   type: "agent";
-  tool: ToolDefinition;
+  tool?: ToolDefinition;
   memory: AgentMemory;
   input?: string;
   outcome?: string;
+  mcpServers?: MCPServerConfig[];
+  mcpTools?: string[];
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+  seed?: number;
   model?: string;
 }
 
@@ -50,7 +71,22 @@ function isToolDefinition(value: unknown): value is ToolDefinition {
     obj.name.trim() !== "" &&
     typeof obj.description === "string" &&
     typeof obj.parameters === "object" &&
-    obj.parameters !== null
+    obj.parameters !== null &&
+    (obj.mcpServer === undefined || typeof obj.mcpServer === "string")
+  );
+}
+
+function isMcpServerConfig(value: unknown): value is MCPServerConfig {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.name === "string" &&
+    (obj.url === undefined || typeof obj.url === "string") &&
+    (obj.command === undefined || typeof obj.command === "string") &&
+    (obj.args === undefined || Array.isArray(obj.args)) &&
+    (obj.env === undefined || typeof obj.env === "object")
   );
 }
 
@@ -58,6 +94,59 @@ const VALID_ROLES: MessageRole[] = ["user", "assistant", "system"];
 
 function isValidRole(role: unknown): role is MessageRole {
   return typeof role === "string" && VALID_ROLES.includes(role as MessageRole);
+}
+
+/**
+ * Validates shared optional fields common to both ChatTask and AgentTask.
+ * Returns true if all shared fields are valid.
+ */
+function validateSharedTaskFields(task: Record<string, unknown>): boolean {
+  return (
+    (task.mcpServers === undefined ||
+      (Array.isArray(task.mcpServers) && task.mcpServers.every(isMcpServerConfig))) &&
+    (task.mcpTools === undefined ||
+      (Array.isArray(task.mcpTools) && task.mcpTools.every((tool) => typeof tool === "string"))) &&
+    (task.temperature === undefined || typeof task.temperature === "number") &&
+    (task.top_p === undefined || typeof task.top_p === "number") &&
+    (task.max_tokens === undefined || typeof task.max_tokens === "number") &&
+    (task.seed === undefined || typeof task.seed === "number") &&
+    (task.model === undefined || typeof task.model === "string")
+  );
+}
+
+/**
+ * Returns an error message for invalid shared fields, or undefined if all are valid.
+ */
+function describeSharedFieldError(
+  task: Record<string, unknown>,
+  index: number
+): string | undefined {
+  if (task.mcpServers !== undefined) {
+    if (!Array.isArray(task.mcpServers) || !task.mcpServers.every(isMcpServerConfig)) {
+      return `tasks[${index}].mcpServers must be an array of MCP server configs`;
+    }
+  }
+  if (task.mcpTools !== undefined) {
+    if (!Array.isArray(task.mcpTools) || !task.mcpTools.every((tool) => typeof tool === "string")) {
+      return `tasks[${index}].mcpTools must be an array of strings`;
+    }
+  }
+  if (task.temperature !== undefined && typeof task.temperature !== "number") {
+    return `tasks[${index}].temperature must be a number`;
+  }
+  if (task.top_p !== undefined && typeof task.top_p !== "number") {
+    return `tasks[${index}].top_p must be a number`;
+  }
+  if (task.max_tokens !== undefined && typeof task.max_tokens !== "number") {
+    return `tasks[${index}].max_tokens must be a number`;
+  }
+  if (task.seed !== undefined && typeof task.seed !== "number") {
+    return `tasks[${index}].seed must be a number`;
+  }
+  if (task.model !== undefined && typeof task.model !== "string") {
+    return `tasks[${index}].model must be a string`;
+  }
+  return undefined;
 }
 
 function isAgentMemory(value: unknown): value is AgentMemory {
@@ -98,7 +187,7 @@ function isChatTask(value: unknown): value is ChatTask {
     typeof task.description === "string" &&
     (task.memory === undefined || isAgentMemory(task.memory)) &&
     (task.outcome === undefined || typeof task.outcome === "string") &&
-    (task.model === undefined || typeof task.model === "string")
+    validateSharedTaskFields(task)
   );
 }
 
@@ -110,11 +199,11 @@ function isAgentTask(value: unknown): value is AgentTask {
   return (
     typeof task.id === "string" &&
     task.type === "agent" &&
-    isToolDefinition(task.tool) &&
+    (task.tool === undefined || isToolDefinition(task.tool)) &&
     isAgentMemory(task.memory) &&
     (task.input === undefined || typeof task.input === "string") &&
     (task.outcome === undefined || typeof task.outcome === "string") &&
-    (task.model === undefined || typeof task.model === "string")
+    validateSharedTaskFields(task)
   );
 }
 
@@ -149,10 +238,14 @@ function describeTaskError(value: unknown, index: number): string {
     if (task.outcome !== undefined && typeof task.outcome !== "string") {
       return `tasks[${index}].outcome must be a string`;
     }
+    const sharedError = describeSharedFieldError(task, index);
+    if (sharedError) {
+      return sharedError;
+    }
   }
 
   if (task.type === "agent") {
-    if (!isToolDefinition(task.tool)) {
+    if (task.tool !== undefined && !isToolDefinition(task.tool)) {
       return `tasks[${index}].tool must have name, description, and parameters`;
     }
     if (!isAgentMemory(task.memory)) {
@@ -163,6 +256,10 @@ function describeTaskError(value: unknown, index: number): string {
     }
     if (task.outcome !== undefined && typeof task.outcome !== "string") {
       return `tasks[${index}].outcome must be a string`;
+    }
+    const sharedError = describeSharedFieldError(task, index);
+    if (sharedError) {
+      return sharedError;
     }
   }
 

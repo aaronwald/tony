@@ -10,18 +10,25 @@ import {
   Task,
   ChatTask,
   AgentTask,
+  ToolDefinition,
 } from "./instructions.js";
 import { createCLI, addCommand, runCli } from "./cli.js";
 import { Memory, createMemory } from "./memory.js";
-import { ToolCall, executeTool, buildToolDefinition } from "./tool.js";
+import { ToolCall, executeTool, buildToolDefinition, listMcpTools } from "./tool.js";
+import { shutdownMcpClients } from "./mcp.js";
 import { createChatCompletion, getOpenAIClient } from "./openai.js";
 import type { Stream } from "openai/streaming";
+import { audit, auditError, auditStep, auditWarn } from "./audit.js";
+import { startSpinner } from "./spinner.js";
 
 /*
 system (System Prompt): Used to define the persona, tone, rules, and constraints for the AI before the conversation begins, ensuring the model acts according to specific guidelines. It is typically the first message.
 user (User Prompt): Represents the questions, requests, or instructions provided by the end-user.
 assistant (Model Response): Stores the AI's prior responses within a conversation, allowing for context retention. It can also be pre-filled by the developer to provide "few-shot" examples of how the assistant should respond.
 */
+
+require('@dotenvx/dotenvx').config({ quiet: true })
+
 
 const DEFAULT_MODEL = "liquid/lfm-2.5-1.2b-thinking:free";
 const MAX_AGENT_ITERATIONS = 10;
@@ -68,18 +75,58 @@ function accumulateToolCalls(
   }
 }
 
+async function resolveTaskTools(task: AgentTask): Promise<ToolDefinition[]> {
+  await auditStep("resolve.tools", task.id);
+  const toolMap = new Map<string, ToolDefinition>();
+
+  if (task.tool) {
+    toolMap.set(task.tool.name, task.tool);
+  }
+
+  if (task.mcpTools && task.mcpServers) {
+    for (const serverName of task.mcpTools) {
+      const server = task.mcpServers.find((item) => item.name === serverName);
+      if (!server) {
+        await auditWarn(`mcp.server.missing: ${task.id} -> ${serverName}`);
+        continue;
+      }
+      const tools = await listMcpTools(server);
+      for (const tool of tools) {
+        if (toolMap.has(tool.name)) {
+          continue;
+        }
+        toolMap.set(tool.name, {
+          name: tool.name,
+          description: tool.description ?? "",
+          parameters: tool.parameters ?? { type: "object" },
+          mcpServer: serverName,
+        });
+      }
+    }
+  }
+
+  return Array.from(toolMap.values());
+}
+
 async function consumeStream(
   stream: Stream<ChatCompletionChunk>,
   label?: string
 ): Promise<AssistantMessage> {
   let content = "";
+  let actualModel: string | undefined;
   const toolCalls: ToolCallAccumulator[] = [];
+
+  await auditStep("stream.start");
 
   if (label) {
     process.stdout.write(label);
   }
 
   for await (const chunk of stream) {
+    if (!actualModel && chunk.model) {
+      actualModel = chunk.model;
+      await audit(`stream.model: ${actualModel}`);
+    }
     const choice = chunk.choices[0];
     const delta = choice?.delta;
     if (!delta) {
@@ -103,6 +150,10 @@ async function consumeStream(
     process.stdout.write("\n");
   }
 
+  if (content.length === 0 && toolCalls.length === 0) {
+    await auditWarn("assistant.empty.response");
+  }
+
   return {
     role: "assistant",
     content: content.length > 0 ? content : null,
@@ -111,13 +162,34 @@ async function consumeStream(
   };
 }
 
+const MAX_STREAM_RETRIES = 2;
+
 async function createAssistantMessage(
   openai: OpenAI,
   params: Parameters<typeof openai.chat.completions.create>[0],
   label?: string
 ): Promise<AssistantMessage> {
-  const stream = await createChatCompletion(openai, { ...params, stream: true });
-  return consumeStream(stream, label);
+  for (let attempt = 0; attempt <= MAX_STREAM_RETRIES; attempt++) {
+    await auditStep("assistant.request");
+    const spinner = startSpinner("Waiting for model response...");
+    try {
+      const stream = await createChatCompletion(openai, { ...params, stream: true });
+      spinner.stop();
+      return await consumeStream(stream, label);
+    } catch (error) {
+      spinner.stop();
+      const isStreamIteratorBug =
+        error instanceof TypeError &&
+        error.message === "undefined is not a function" &&
+        error.stack?.includes("ReadableStreamAsyncIterator");
+      if (isStreamIteratorBug && attempt < MAX_STREAM_RETRIES) {
+        await auditWarn(`stream.retry: attempt ${attempt + 1} (Bun ReadableStream bug)`);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("Unreachable");
 }
 
 async function runChatTask(
@@ -125,11 +197,13 @@ async function runChatTask(
   task: ChatTask,
   model: string
 ): Promise<void> {
+  await auditStep("chat.task.start", task.id);
   await createAssistantMessage(
     openai,
     {
       model,
       messages: buildChatMessages(task),
+      ...buildGenerationParams(task),
     },
     "  🗨️  Assistant: "
   );
@@ -177,6 +251,15 @@ function buildChatMessages(task: ChatTask): ChatCompletionMessageParam[] {
   return messages;
 }
 
+function buildGenerationParams(task: ChatTask | AgentTask) {
+  return {
+    temperature: task.temperature,
+    top_p: task.top_p,
+    max_tokens: task.max_tokens,
+    seed: task.seed,
+  };
+}
+
 
 function isLowValueAssistantMessage(content: string | null | undefined): boolean {
   if (!content) {
@@ -194,13 +277,19 @@ async function runAgentTask(
   task: AgentTask,
   model: string
 ): Promise<Memory> {
-  console.log(`🤖 Running agent task: ${task.id}`);
+  await auditStep("agent.task.start", task.id);
 
   const memory = createMemory(task.memory);
-  const tools = [buildToolDefinition(task.tool)];
+  const toolDefinitions = await resolveTaskTools(task);
+  const tools = toolDefinitions.length > 0 ? toolDefinitions.map(buildToolDefinition) : undefined;
   const messages = buildMessages(memory);
+  if (task.outcome && task.outcome.trim().length > 0) {
+    messages.push({ role: "system", content: `Desired outcome: ${task.outcome}` });
+  }
   let lastAssistantContent: string | undefined;
   let repeatedAssistantCount = 0;
+  let lastToolSignature: string | undefined;
+  let repeatedToolCalls = 0;
 
   if (!memory.endsWithUserMessage()) {
     if (task.input) {
@@ -214,13 +303,15 @@ async function runAgentTask(
   }
 
   for (let i = 0; i < MAX_AGENT_ITERATIONS; i++) {
+    await auditStep("agent.iteration", `${task.id}#${i + 1}`);
     const assistantMessage = await createAssistantMessage(
       openai,
       {
         model,
         messages,
         tools,
-        tool_choice: "auto",
+        tool_choice: tools ? "auto" : undefined,
+        ...buildGenerationParams(task),
       },
       "  🤖 Assistant: "
     );
@@ -238,7 +329,7 @@ async function runAgentTask(
     }
 
     if (repeatedAssistantCount >= MAX_REPEATED_ASSISTANT_MESSAGES) {
-      console.log("  Stopping: repeated assistant responses detected.");
+      await auditWarn(`agent.stop.repeated: ${task.id}`);
       return memory;
     }
 
@@ -246,29 +337,71 @@ async function runAgentTask(
     // Iterate til no more tools to do
     if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
       if (isLowValueAssistantMessage(assistantMessage.content)) {
-        console.log("  Stopping: low-value assistant response detected.");
+        await auditWarn(`agent.stop.lowValue: ${task.id}`);
         return memory;
       }
-      console.log(`  Assistant: ${assistantMessage.content}`);
+      await audit(`agent.complete: ${task.id}`);
       return memory;
     }
 
-    // Execute each tool call
+    if (toolDefinitions.length === 0) {
+      await auditWarn(`agent.stop.noTools: ${task.id}`);
+      return memory;
+    }
+
+    // Execute each tool call (Function)
     for (const toolCall of assistantMessage.tool_calls) {
       // Only handle function-type tool calls
       if (toolCall.type !== "function" || !("function" in toolCall)) {
         continue;
       }
-      const result = await executeTool(toolCall as ToolCall);
+      const toolSignature = `${toolCall.function.name}:${toolCall.function.arguments}`;
+      if (toolSignature === lastToolSignature) {
+        repeatedToolCalls += 1;
+      } else {
+        repeatedToolCalls = 0;
+        lastToolSignature = toolSignature;
+      }
+
+      if (repeatedToolCalls >= 2) {
+        await auditWarn(`agent.stop.repeatedTool: ${task.id}`);
+        return memory;
+      }
+
+      const toolName = toolCall.function.name;
+      const spinner = startSpinner(`Running tool: ${toolName}`);
+      const result = await executeTool(toolCall as ToolCall, {
+        tools: toolDefinitions,
+        mcpServers: task.mcpServers,
+      });
+      spinner.stop();
+      try {
+        const parsed = JSON.parse(result) as Record<string, unknown>;
+        if (parsed.error) {
+          console.error(`  ✗ ${toolName}: ${parsed.error}`);
+          await auditWarn(`agent.stop.toolError: ${task.id}`);
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: result,
+          });
+          return memory;
+        }
+      } catch {
+        // not an error, keep going
+      }
       messages.push({
         role: "tool",
         tool_call_id: toolCall.id,
         content: result,
       });
+      // TODO Should tool calls form new memories?
+      // memory.appendToolResult(toolCall.function.name ?? "unknown", result);
     }
   }
 
   console.log(`  Warning: Reached max iterations (${MAX_AGENT_ITERATIONS})`);
+  await auditWarn(`agent.stop.maxIterations: ${task.id}`);
   return memory;
 }
 
@@ -278,6 +411,8 @@ async function runTask(
   getClient: () => OpenAI
 ): Promise<void> {
   const model = task.model ?? defaultModel;
+  console.log(`  Model: ${model}`);
+  await auditStep("task.start", `${task.id}:${task.type}:${model}`);
 
   switch (task.type) {
     case "chat":
@@ -286,9 +421,9 @@ async function runTask(
     case "agent":
       const memory:Memory = await runAgentTask(getClient(), task, model);
       if (memory) {
-        console.log("  Final agent memory:");
+        await audit(`agent.memory.final: ${task.id}`);
         for (const entry of memory.getHistory()) {
-          console.log(`    [${entry.role}] ${entry.content}`);
+          await audit(`agent.memory.entry: ${task.id} [${entry.role}] ${entry.content}`);
         }
       }
       break;
@@ -299,6 +434,7 @@ interface RunArgs {
   file?: string;
   model?: string;
   taskId?: string;
+  preflight: boolean;
   showHelp: boolean;
   errors: string[];
 }
@@ -307,6 +443,7 @@ function parseRunArgs(args: string[]): RunArgs {
   let file: string | undefined;
   let model: string | undefined;
   let taskId: string | undefined;
+  let preflight = false;
   let showHelp = false;
   const errors: string[] = [];
 
@@ -314,6 +451,10 @@ function parseRunArgs(args: string[]): RunArgs {
     const arg = args[i];
     if (arg === "--help" || arg === "-h") {
       showHelp = true;
+      continue;
+    }
+    if (arg === "--preflight") {
+      preflight = true;
       continue;
     }
     if (arg === "--file" || arg === "-f") {
@@ -351,7 +492,7 @@ function parseRunArgs(args: string[]): RunArgs {
     }
   }
 
-  return { file, model, taskId, showHelp, errors };
+  return { file, model, taskId, preflight, showHelp, errors };
 }
 
 function filterTasks(
@@ -385,7 +526,51 @@ function printRunHelp(): void {
   console.log("  -f, --file <path>    Path to instructions JSON");
   console.log("  -m, --model <model>  Override model for all tasks");
   console.log("  -t, --task <id>      Run a single task by id");
+  console.log("  --preflight          List MCP tools before running");
   console.log("  -h, --help           Show this help message");
+}
+
+async function preflightTasks(tasks: Task[]): Promise<void> {
+  const servers = new Map<string, NonNullable<Task["mcpServers"]>[number]>();
+  for (const task of tasks) {
+    if (!task.mcpServers) {
+      continue;
+    }
+    const filter = task.mcpTools && task.mcpTools.length > 0 ? new Set(task.mcpTools) : undefined;
+    for (const server of task.mcpServers) {
+      if (filter && !filter.has(server.name)) {
+        continue;
+      }
+      servers.set(server.name, server);
+    }
+  }
+
+  for (const server of servers.values()) {
+    await auditStep("mcp.preflight", server.name);
+    const spinner = startSpinner(`Connecting to MCP server: ${server.name}`);
+    try {
+      const tools = await listMcpTools(server);
+      spinner.stop();
+      if (tools.length === 0) {
+        console.error(`  ⚠ ${server.name}: no tools found`);
+        await auditWarn(`mcp.preflight.empty: ${server.name}`);
+        continue;
+      }
+      console.log(`  ✓ ${server.name}: ${tools.length} tools`);
+      for (const tool of tools) {
+        await audit(`mcp.tool: ${server.name}.${tool.name}`);
+      }
+    } catch (error) {
+      spinner.stop();
+      const message = error instanceof Error ? error.message : "Unknown error";
+      const stack = error instanceof Error ? error.stack : undefined;
+      console.error(`  ✗ ${server.name}: ${message}`);
+      await auditError(`mcp.preflight.failed: ${server.name} -> ${message}`);
+      if (stack) {
+        await auditError(`mcp.preflight.failed.stack: ${stack}`);
+      }
+    }
+  }
 }
 
 addCommand(cli, {
@@ -393,7 +578,7 @@ addCommand(cli, {
   description: "Run tasks from instructions.json",
   action: async (args) => {
     try {
-      const { file, model: modelOverride, taskId, showHelp, errors } =
+      const { file, model: modelOverride, taskId, preflight, showHelp, errors } =
         parseRunArgs(args);
       if (showHelp) {
         printRunHelp();
@@ -417,6 +602,10 @@ addCommand(cli, {
       const { tasks, model: defaultModel } = filterTasks(instructions, taskId);
       const model = modelOverride ?? defaultModel;
 
+      if (preflight) {
+        await preflightTasks(tasks);
+      }
+
       let cachedClient: OpenAI | undefined;
       const getClient = () => {
         if (!cachedClient) {
@@ -425,18 +614,33 @@ addCommand(cli, {
         return cachedClient;
       };
 
-      for (const task of tasks) {
-        try {
+      try {
+        for (const task of tasks) {
           await runTask(task, model, getClient);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Unknown error";
-          console.error(`Task "${task.id}" (${task.type}) failed: ${message}`);
-          process.exitCode = 1;
-          return;
         }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        const stack = error instanceof Error ? error.stack : undefined;
+        await auditError(`task.failed: ${message}`);
+        if (stack) {
+          await auditError(`task.failed.stack: ${stack}`);
+        }
+        console.error(`Task failed: ${message}`);
+        if (stack) {
+          console.error(stack);
+        }
+        process.exitCode = 1;
+      } finally {
+        await shutdownMcpClients();
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
+      const stack = error instanceof Error ? error.stack : undefined;
+      await auditError(`run.failed: ${message}`);
+      if (stack) {
+        await auditError(`run.failed.stack: ${stack}`);
+        console.error(stack);
+      }
       console.error(`Error: ${message}`);
       process.exitCode = 1;
     }
