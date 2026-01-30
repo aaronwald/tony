@@ -6,3 +6,4 @@ homelab.conf
 audit.log
 .env
 .env.*
+stats.csv
