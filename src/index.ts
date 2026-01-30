@@ -113,6 +113,7 @@ async function consumeStream(
   label?: string
 ): Promise<AssistantMessage> {
   let content = "";
+  let actualModel: string | undefined;
   const toolCalls: ToolCallAccumulator[] = [];
 
   await auditStep("stream.start");
@@ -122,6 +123,10 @@ async function consumeStream(
   }
 
   for await (const chunk of stream) {
+    if (!actualModel && chunk.model) {
+      actualModel = chunk.model;
+      await audit(`stream.model: ${actualModel}`);
+    }
     const choice = chunk.choices[0];
     const delta = choice?.delta;
     if (!delta) {
@@ -406,7 +411,8 @@ async function runTask(
   getClient: () => OpenAI
 ): Promise<void> {
   const model = task.model ?? defaultModel;
-  await auditStep("task.start", `${task.id}:${task.type}`);
+  console.log(`  Model: ${model}`);
+  await auditStep("task.start", `${task.id}:${task.type}:${model}`);
 
   switch (task.type) {
     case "chat":
