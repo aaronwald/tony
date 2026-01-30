@@ -9,7 +9,7 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
-    "types": ["node"],
+    "types": ["node", "bun"],
     "jsx": "react-jsx",
     "jsxImportSource": "react"
   },

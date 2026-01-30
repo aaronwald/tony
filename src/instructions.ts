@@ -266,7 +266,7 @@ function describeTaskError(value: unknown, index: number): string {
   return `tasks[${index}] has an unknown validation error`;
 }
 
-function parseInstructions(raw: string, sourcePath: string): Instructions {
+export function parseInstructions(raw: string, sourcePath: string): Instructions {
   let parsed: unknown;
 
   try {
