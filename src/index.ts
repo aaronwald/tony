@@ -616,12 +616,17 @@ async function runTask(
   inheritedMemory?: Memory
 ): Promise<Memory | undefined> {
   const model = task.model ?? context.defaultModel;
-  console.log(`  Model: ${model}`);
+  const hasTools = task.type === "agent" && (task.mcpTools?.length || task.tool);
+  const resolvedModel = hasTools ? TOOL_MODEL : model;
+  if (resolvedModel !== model) {
+    await auditWarn(`task.model.override: ${model} -> ${resolvedModel}`);
+  }
+  console.log(`  Model: ${resolvedModel}`);
   const taskRunId = randomUUID();
   await pushAuditContext({ taskId: task.id, taskRunId });
 
   try {
-    await auditStep("task.start", `${task.id}:${task.type}:${model}`);
+    await auditStep("task.start", `${task.id}:${task.type}:${resolvedModel}`);
 
     const resolvedTask = inheritedMemory
       ? applyInheritedMemory(task, inheritedMemory)
@@ -635,13 +640,13 @@ async function runTask(
 
     switch (resolvedTask.type) {
       case "chat":
-        await runChatTask(activeContext.getClient(), resolvedTask, model);
+        await runChatTask(activeContext.getClient(), resolvedTask, resolvedModel);
         return undefined;
       case "agent":
         const memory:Memory = await runAgentTask(
           activeContext.getClient(),
           resolvedTask,
-          model,
+          resolvedModel,
           activeContext
         );
         if (memory) {

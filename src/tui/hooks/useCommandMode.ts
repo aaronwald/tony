@@ -225,8 +225,8 @@ function executeToolCalls(
     const callId = call.id ?? "";
 
     if (scope === "task") {
-      if (name !== "update_task" && name !== "get_task" && name !== "check_task_exists") {
-        throw new Error("Task scope only supports update_task, get_task, or check_task_exists");
+      if (name !== "update_task" && name !== "get_task" && name !== "check_task_exists" && name !== "list_tasks") {
+        throw new Error("Task scope only supports update_task, get_task, check_task_exists, or list_tasks");
       }
       if (name === "update_task" || name === "get_task" || name === "check_task_exists") {
         const id = args.id as string | undefined;
@@ -306,6 +306,11 @@ function executeToolCalls(
         results.push({ toolCallId: callId, name, output: { exists } });
         break;
       }
+      case "list_tasks": {
+        const tasks = next.tasks.map((t) => ({ id: t.id, type: t.type }));
+        results.push({ toolCallId: callId, name, output: { tasks } });
+        break;
+      }
       default:
         throw new Error(`Unsupported tool: ${name}`);
     }
@@ -376,9 +381,32 @@ The top-level object has:
 
 ## Response format
 
-Use the provided tools to add, update, delete, or reorder tasks.
+Use the provided tools to add, update, delete, reorder, or inspect tasks.
 Do NOT return JSON edits. Do NOT rewrite the full instructions file.
 If no change is needed, reply with a short explanation only.
+
+## Tool usage examples
+
+- Add a task by name:
+  add_task({ "name": "tempcheck" })
+
+- Add a full task object:
+  add_task({ "task": { "id": "tempcheck", "type": "agent", "memory": { "context": [], "history": [] }, "input": "Check temporal namespace" } })
+
+- Update a task:
+  update_task({ "id": "tempcheck", "updates": { "mcpTools": ["flux"] } })
+
+- Delete a task:
+  delete_task({ "id": "tempcheck" })
+
+- Check if a task exists:
+  check_task_exists({ "id": "tempcheck" })
+
+- Get a task:
+  get_task({ "id": "tempcheck" })
+
+- List tasks:
+  list_tasks({})
 
 Note: tools will apply changes and validate the result automatically.`;
 
@@ -500,6 +528,18 @@ export async function executeCommand(
               id: { type: "string" },
             },
             required: ["id"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "list_tasks",
+          description: "List task ids and types",
+          parameters: {
+            type: "object",
+            properties: {},
+            required: [],
           },
         },
       },
