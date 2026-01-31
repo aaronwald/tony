@@ -33,7 +33,8 @@ import { appendStats } from "./stats.js";
 import { render } from "ink";
 import React from "react";
 import { App } from "./tui/app.js";
-import { loadOrScaffold, getFileMtime } from "./tui/hooks/fileOps.js";
+import { loadOrScaffold, getFileMtime, saveInstructions } from "./tui/hooks/fileOps.js";
+import { executeCommand } from "./tui/hooks/useCommandMode.js";
 
 /*
 system (System Prompt): Used to define the persona, tone, rules, and constraints for the AI before the conversation begins, ensuring the model acts according to specific guidelines. It is typically the first message.
@@ -912,15 +913,43 @@ addCommand(cli, {
   description: "Interactive TUI for editing instructions",
   action: async (args: string[]) => {
     let filePath = "instructions.json";
+    let initialCommand: string | undefined;
     for (let i = 0; i < args.length; i++) {
       if ((args[i] === "-f" || args[i] === "--file") && args[i + 1]) {
         filePath = args[i + 1];
+        i++;
+      } else if ((args[i] === "-c" || args[i] === "--command") && args[i + 1]) {
+        initialCommand = args[i + 1];
         i++;
       }
     }
     const { resolve } = await import("path");
     const resolved = resolve(process.cwd(), filePath);
     const instructions = await loadOrScaffold(resolved);
+
+    if (initialCommand) {
+      const result = await executeCommand(
+        initialCommand,
+        { instructions },
+        "global"
+      );
+      if (result.error) {
+        console.error(`Error: ${result.error}`);
+        if (result.explanation) console.error(result.explanation);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(result.explanation);
+      if (result.changedFields.length > 0) {
+        console.log(`Changed: ${result.changedFields.join(", ")}`);
+      }
+      if (result.instructions) {
+        saveInstructions(resolved, result.instructions);
+        console.log(`Saved ${resolved}`);
+      }
+      return;
+    }
+
     const mtime = getFileMtime(resolved);
     const { waitUntilExit } = render(
       React.createElement(App, {

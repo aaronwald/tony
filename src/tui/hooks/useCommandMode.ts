@@ -1,7 +1,6 @@
 import type { Instructions, Task } from "../../instructions.js";
 import { getOpenAIClient } from "../../openai.js";
 import { createChatCompletion } from "../../openai.js";
-import { parseLlmJson } from "./parseLlmJson.js";
 import type { OpenAI } from "openai";
 
 export interface CommandResult {
@@ -11,6 +10,8 @@ export interface CommandResult {
   changedFields: string[];
   error?: string;
 }
+
+const TOOL_MODEL = "openai/gpt-4o-mini";
 
 type CommandScope = "global" | "task";
 
@@ -41,8 +42,7 @@ function deepMerge(
 }
 
 /**
- * Inject _index markers into tasks for reliable matching.
- * Strips them from the result after merging.
+ * Inject _index markers into tasks to help the model reference tasks.
  */
 function injectTaskIndices(instructions: Instructions): Record<string, unknown> {
   const obj = JSON.parse(JSON.stringify(instructions));
@@ -54,72 +54,231 @@ function injectTaskIndices(instructions: Instructions): Record<string, unknown> 
   return obj;
 }
 
-function stripTaskIndices(task: Record<string, unknown>): Record<string, unknown> {
-  const { _index, ...rest } = task;
-  return rest;
-}
+const VALID_MEMORY_ROLES = new Set(["user", "assistant", "system"]);
 
-/**
- * Merge LLM-returned instructions onto existing instructions.
- * Matches tasks by _index first, then by id, preserving tasks
- * the LLM didn't mention and appending genuinely new ones.
- */
-function mergeInstructions(
-  base: Instructions,
-  llmResult: Record<string, unknown>
-): Instructions {
-  // Merge top-level non-tasks fields (exclude tasks from deepMerge)
-  const { tasks: _llmTasks, ...llmNonTasks } = llmResult;
-  const merged = deepMerge(
-    base as unknown as Record<string, unknown>,
-    llmNonTasks
-  ) as unknown as Instructions;
+function normalizeAgentMemory(
+  memory: Record<string, unknown>
+): { context: string[]; history: { role: string; content: string }[] } {
+  const rawContext = memory.context;
+  const context = Array.isArray(rawContext)
+    ? rawContext.filter((c) => typeof c === "string")
+    : [];
 
-  // If LLM didn't return tasks, keep originals
-  if (!Array.isArray(_llmTasks)) {
-    merged.tasks = base.tasks;
-    return merged;
-  }
-
-  const baseTasks = base.tasks;
-  const matchedBaseIndices = new Set<number>();
-  const resultTasks: Record<string, unknown>[] = [...baseTasks.map(
-    (t) => t as unknown as Record<string, unknown>
-  )];
-
-  for (const llmTask of _llmTasks) {
-    if (!isPlainObject(llmTask)) continue;
-    const lt = llmTask as Record<string, unknown>;
-
-    // Try _index match first
-    let baseIdx = -1;
-    if (typeof lt._index === "number" && lt._index >= 0 && lt._index < baseTasks.length) {
-      baseIdx = lt._index;
-    }
-
-    // Fall back to id match
-    if (baseIdx < 0 && typeof lt.id === "string") {
-      baseIdx = baseTasks.findIndex((t) => t.id === lt.id);
-    }
-
-    if (baseIdx >= 0) {
-      // Merge onto existing task
-      resultTasks[baseIdx] = stripTaskIndices(
-        deepMerge(
-          baseTasks[baseIdx] as unknown as Record<string, unknown>,
-          lt
+  const rawHistory = memory.history;
+  const history = Array.isArray(rawHistory)
+    ? rawHistory
+        .filter(
+          (entry) =>
+            !!entry &&
+            typeof entry === "object" &&
+            typeof (entry as Record<string, unknown>).role === "string" &&
+            VALID_MEMORY_ROLES.has((entry as Record<string, unknown>).role as string) &&
+            typeof (entry as Record<string, unknown>).content === "string"
         )
-      );
-      matchedBaseIndices.add(baseIdx);
-    } else if (typeof lt.id === "string") {
-      // Genuinely new task
-      resultTasks.push(stripTaskIndices(lt));
+        .map((entry) => ({
+          role: (entry as Record<string, unknown>).role as string,
+          content: (entry as Record<string, unknown>).content as string,
+        }))
+    : [];
+
+  return { context, history };
+}
+
+function normalizeTask(task: Record<string, unknown>): Record<string, unknown> {
+  if (task.type !== "agent") {
+    return task;
+  }
+  const memory = isPlainObject(task.memory)
+    ? (task.memory as Record<string, unknown>)
+    : {};
+  return {
+    ...task,
+    memory: normalizeAgentMemory(memory),
+  };
+}
+
+function ensureAgentMemory(task: Record<string, unknown>): Record<string, unknown> {
+  if (task.type !== "agent") {
+    return task;
+  }
+  if (!isPlainObject(task.memory)) {
+    return {
+      ...task,
+      memory: normalizeAgentMemory({}),
+    };
+  }
+  return {
+    ...task,
+    memory: normalizeAgentMemory(task.memory as Record<string, unknown>),
+  };
+}
+
+function assertTaskShape(task: Record<string, unknown>): void {
+  if (typeof task.id !== "string" || task.id.trim() === "") {
+    throw new Error("Task must include a non-empty id");
+  }
+  if (task.type !== "agent" && task.type !== "chat") {
+    throw new Error(`Task "${task.id}" must have type "agent" or "chat"`);
+  }
+  if (task.type === "chat") {
+    if (typeof task.prompt !== "string" || typeof task.description !== "string") {
+      throw new Error(`Task "${task.id}" must include prompt and description for chat tasks`);
     }
   }
-
-  merged.tasks = resultTasks as unknown as Task[];
-  return merged;
 }
+
+function applyAddTask(instructions: Instructions, rawTask: Record<string, unknown>): Instructions {
+  assertTaskShape(rawTask);
+  if (instructions.tasks.some((t) => t.id === rawTask.id)) {
+    throw new Error(`Task with id "${rawTask.id}" already exists`);
+  }
+  const task = normalizeTask(ensureAgentMemory(rawTask)) as Task;
+  return {
+    ...instructions,
+    tasks: [...instructions.tasks, task],
+  };
+}
+
+function applyUpdateTask(
+  instructions: Instructions,
+  taskId: string,
+  updates: Record<string, unknown>
+): Instructions {
+  const idx = instructions.tasks.findIndex((t) => t.id === taskId);
+  if (idx < 0) {
+    throw new Error(`Task with id "${taskId}" not found`);
+  }
+  const existing = instructions.tasks[idx] as unknown as Record<string, unknown>;
+  const { id: _ignoreId, ...safeUpdates } = updates;
+  const merged = normalizeTask(
+    ensureAgentMemory(
+      deepMerge(existing, safeUpdates)
+    )
+  ) as Task;
+  const nextTasks = [...instructions.tasks];
+  nextTasks[idx] = merged;
+  return { ...instructions, tasks: nextTasks };
+}
+
+function applyDeleteTask(instructions: Instructions, taskId: string): Instructions {
+  const nextTasks = instructions.tasks.filter((t) => t.id !== taskId);
+  if (nextTasks.length === instructions.tasks.length) {
+    throw new Error(`Task with id "${taskId}" not found`);
+  }
+  return { ...instructions, tasks: nextTasks };
+}
+
+function applyReorderTask(
+  instructions: Instructions,
+  fromIndex: number,
+  toIndex: number
+): Instructions {
+  const tasks = [...instructions.tasks];
+  if (fromIndex < 0 || fromIndex >= tasks.length) {
+    throw new Error("Invalid fromIndex for reorder");
+  }
+  if (toIndex < 0 || toIndex >= tasks.length) {
+    throw new Error("Invalid toIndex for reorder");
+  }
+  const [moved] = tasks.splice(fromIndex, 1);
+  tasks.splice(toIndex, 0, moved);
+  return { ...instructions, tasks };
+}
+
+type ToolCall = {
+  id?: string;
+  type?: string;
+  function?: {
+    name?: string;
+    arguments?: string;
+  };
+};
+
+function parseToolArguments(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    throw new Error("Invalid tool arguments JSON");
+  }
+}
+
+function applyToolCalls(
+  instructions: Instructions,
+  toolCalls: ToolCall[],
+  scope: CommandScope,
+  currentTaskId?: string
+): Instructions {
+  let next = instructions;
+  for (const call of toolCalls) {
+    const name = call.function?.name;
+    if (!name) continue;
+    const args = parseToolArguments(call.function?.arguments);
+
+    if (scope === "task") {
+      if (name !== "update_task") {
+        throw new Error("Task scope only supports update_task");
+      }
+      const id = args.id as string | undefined;
+      if (!id || id !== currentTaskId) {
+        throw new Error("Task scope update must target the current task id");
+      }
+    }
+
+    switch (name) {
+      case "add_task": {
+        const task = args.task as Record<string, unknown> | undefined;
+        if (task && isPlainObject(task)) {
+          next = applyAddTask(next, task);
+          break;
+        }
+        const name = (args.name as string | undefined) ?? (args.id as string | undefined);
+        if (!name) {
+          throw new Error("add_task requires a task object or name/id");
+        }
+        const built: Record<string, unknown> = {
+          id: name,
+          type: "agent",
+          memory: { context: [], history: [] },
+          input: args.input,
+          outcome: args.outcome,
+        };
+        next = applyAddTask(next, built);
+        break;
+      }
+      case "update_task": {
+        const id = args.id as string | undefined;
+        const updates = args.updates as Record<string, unknown> | undefined;
+        if (!id || !updates || !isPlainObject(updates)) {
+          throw new Error("update_task requires id and updates");
+        }
+        next = applyUpdateTask(next, id, updates);
+        break;
+      }
+      case "delete_task": {
+        const id = args.id as string | undefined;
+        if (!id) {
+          throw new Error("delete_task requires id");
+        }
+        next = applyDeleteTask(next, id);
+        break;
+      }
+      case "reorder_task": {
+        const fromIndex = Number(args.fromIndex);
+        const toIndex = Number(args.toIndex);
+        if (!Number.isFinite(fromIndex) || !Number.isFinite(toIndex)) {
+          throw new Error("reorder_task requires fromIndex and toIndex numbers");
+        }
+        next = applyReorderTask(next, fromIndex, toIndex);
+        break;
+      }
+      default:
+        throw new Error(`Unsupported tool: ${name}`);
+    }
+  }
+  return next;
+}
+
 
 function diffFieldsDeep(
   oldObj: Record<string, unknown>,
@@ -183,37 +342,11 @@ The top-level object has:
 
 ## Response format
 
-1. A brief explanation of what you changed
-2. A JSON code block with ONLY the fields you are changing
+Use the provided tools to add, update, delete, or reorder tasks.
+Do NOT return JSON edits. Do NOT rewrite the full instructions file.
+If no change is needed, reply with a short explanation only.
 
-RULES:
-- Only include fields you are modifying. Unchanged fields will be preserved automatically.
-- For task scope: return a task object with "id", "type", "_index", and only the changed fields.
-- For global scope: return an instructions object with only the changed parts. Each task in the "tasks" array MUST include its "_index" field unchanged for matching.
-- NEVER use "..." or ellipsis. Omit unchanged fields entirely.
-- The JSON must be valid. No comments, no trailing commas.
-- Always preserve the "_index" field on tasks exactly as given.
-
-Always wrap JSON in a \`\`\`json code fence.
-
-## Example
-
-User command: "change the temperature to 0.9 and max_tokens to 1000"
-
-Good response:
-I updated the temperature to 0.9 and max_tokens to 1000.
-
-\`\`\`json
-{
-  "_index": 0,
-  "id": "my-task",
-  "type": "agent",
-  "temperature": 0.9,
-  "max_tokens": 1000
-}
-\`\`\`
-
-Note: only the changed fields are included. All other fields are preserved automatically.`;
+Note: tools will apply changes and validate the result automatically.`;
 
 export async function executeCommand(
   command: string,
@@ -223,7 +356,7 @@ export async function executeCommand(
 ): Promise<CommandResult> {
   try {
     const client: OpenAI = getOpenAIClient();
-    const resolvedModel = model ?? context.instructions.defaultModel ?? "openai/gpt-4o-mini";
+    const resolvedModel = model ?? TOOL_MODEL;
 
     const indexedInstructions = injectTaskIndices(context.instructions);
 
@@ -243,13 +376,82 @@ export async function executeCommand(
       { role: "user", content: userContent },
     ];
 
+    const tools = [
+      {
+        type: "function",
+        function: {
+          name: "add_task",
+          description: "Add a new task to instructions",
+          parameters: {
+            type: "object",
+            properties: {
+              task: { type: "object", description: "Full task object to add" },
+              name: { type: "string", description: "Task id/name (when not providing task)" },
+              id: { type: "string", description: "Task id (alias for name)" },
+              input: { type: "string", description: "Optional agent input" },
+              outcome: { type: "string", description: "Optional agent outcome" },
+            },
+            required: [],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "update_task",
+          description: "Update an existing task by id",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              updates: { type: "object", description: "Partial fields to update" },
+            },
+            required: ["id", "updates"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "delete_task",
+          description: "Delete a task by id",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+            },
+            required: ["id"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "reorder_task",
+          description: "Reorder tasks by index",
+          parameters: {
+            type: "object",
+            properties: {
+              fromIndex: { type: "number" },
+              toIndex: { type: "number" },
+            },
+            required: ["fromIndex", "toIndex"],
+          },
+        },
+      },
+    ];
+
     const completion = await createChatCompletion(client, {
       model: resolvedModel,
       messages,
+      tools,
     });
 
-    const responseText = completion.choices[0]?.message?.content;
-    if (!responseText) {
+    const responseMessage = completion.choices[0]?.message;
+    const toolCalls = (responseMessage as unknown as { tool_calls?: ToolCall[] })
+      ?.tool_calls;
+    const responseText = responseMessage?.content;
+    if (!responseText && (!toolCalls || toolCalls.length === 0)) {
       return {
         explanation: "No response from model",
         changedFields: [],
@@ -257,52 +459,34 @@ export async function executeCommand(
       };
     }
 
-    const parsed = parseLlmJson(responseText);
-    if (!parsed) {
-      return {
-        explanation: responseText,
-        changedFields: [],
-        error: "Could not parse JSON from model response",
-      };
-    }
-
-    if (scope === "task" && context.currentTask) {
-      const llmTask = parsed.json as Record<string, unknown>;
-      // Deep-merge LLM response onto existing task, strip _index marker.
-      // Validation deferred to save time.
-      const mergedTask = stripTaskIndices(
-        deepMerge(
-          context.currentTask as unknown as Record<string, unknown>,
-          llmTask
-        )
-      ) as unknown as Task;
-      const changed = diffFieldsDeep(
-        context.currentTask as unknown as Record<string, unknown>,
-        mergedTask as unknown as Record<string, unknown>
-      );
-      return {
-        task: mergedTask,
-        explanation: parsed.explanation || "Task updated",
-        changedFields: changed,
-      };
-    } else {
-      // Global scope: merge LLM response onto existing instructions.
-      // Tasks are matched by id so unmentioned tasks are preserved.
-      const llmInstructions = parsed.json as Record<string, unknown>;
-      const mergedInstructions = mergeInstructions(
+    if (toolCalls && toolCalls.length > 0) {
+      const updated = applyToolCalls(
         context.instructions,
-        llmInstructions
+        toolCalls,
+        scope,
+        context.currentTask?.id
       );
       const changed = diffFieldsDeep(
         context.instructions as unknown as Record<string, unknown>,
-        mergedInstructions as unknown as Record<string, unknown>
+        updated as unknown as Record<string, unknown>
       );
+      const updatedTask =
+        scope === "task" && context.currentTask
+          ? updated.tasks.find((t) => t.id === context.currentTask!.id)
+          : undefined;
       return {
-        instructions: mergedInstructions,
-        explanation: parsed.explanation || "Instructions updated",
+        instructions: updated,
+        task: updatedTask,
+        explanation: responseText || "Instructions updated",
         changedFields: changed,
       };
     }
+
+    return {
+      explanation: responseText || "No tool calls provided",
+      changedFields: [],
+      error: "Model must use tools to edit instructions",
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return {
