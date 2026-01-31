@@ -45,16 +45,6 @@
       ],
       "input": "Please check the status of  k8s resources in the ssmd namespace.",
       "outcome": "A summary table with the status of the cluster by resource type."
-    },
-    {
-      "id": "tempcheck",
-      "type": "agent",
-      "memory": {
-        "context": [],
-        "history": []
-      },
-      "input": "Please check the status of k8s resources in the temporal namespace.",
-      "outcome": "A summary table with the status of the temporal namespace by resource type."
     }
   ]
 }
