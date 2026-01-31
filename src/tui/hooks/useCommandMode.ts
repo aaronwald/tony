@@ -1,4 +1,5 @@
 import type { Instructions, Task } from "../../instructions.js";
+import { audit, auditError, auditStep, auditWarn } from "../../audit.js";
 import { getOpenAIClient } from "../../openai.js";
 import { createChatCompletion } from "../../openai.js";
 import type { OpenAI } from "openai";
@@ -194,6 +195,12 @@ type ToolCall = {
   };
 };
 
+type ToolResult = {
+  toolCallId: string;
+  name: string;
+  output: Record<string, unknown>;
+};
+
 function parseToolArguments(raw: string | undefined): Record<string, unknown> {
   if (!raw) return {};
   try {
@@ -203,25 +210,29 @@ function parseToolArguments(raw: string | undefined): Record<string, unknown> {
   }
 }
 
-function applyToolCalls(
+function executeToolCalls(
   instructions: Instructions,
   toolCalls: ToolCall[],
   scope: CommandScope,
   currentTaskId?: string
-): Instructions {
+): { instructions: Instructions; results: ToolResult[] } {
   let next = instructions;
+  const results: ToolResult[] = [];
   for (const call of toolCalls) {
     const name = call.function?.name;
     if (!name) continue;
     const args = parseToolArguments(call.function?.arguments);
+    const callId = call.id ?? "";
 
     if (scope === "task") {
-      if (name !== "update_task") {
-        throw new Error("Task scope only supports update_task");
+      if (name !== "update_task" && name !== "get_task" && name !== "check_task_exists") {
+        throw new Error("Task scope only supports update_task, get_task, or check_task_exists");
       }
-      const id = args.id as string | undefined;
-      if (!id || id !== currentTaskId) {
-        throw new Error("Task scope update must target the current task id");
+      if (name === "update_task" || name === "get_task" || name === "check_task_exists") {
+        const id = args.id as string | undefined;
+        if (!id || id !== currentTaskId) {
+          throw new Error("Task scope operations must target the current task id");
+        }
       }
     }
 
@@ -230,6 +241,7 @@ function applyToolCalls(
         const task = args.task as Record<string, unknown> | undefined;
         if (task && isPlainObject(task)) {
           next = applyAddTask(next, task);
+          results.push({ toolCallId: callId, name, output: { ok: true, id: task.id } });
           break;
         }
         const name = (args.name as string | undefined) ?? (args.id as string | undefined);
@@ -244,6 +256,7 @@ function applyToolCalls(
           outcome: args.outcome,
         };
         next = applyAddTask(next, built);
+        results.push({ toolCallId: callId, name, output: { ok: true, id: name } });
         break;
       }
       case "update_task": {
@@ -253,6 +266,7 @@ function applyToolCalls(
           throw new Error("update_task requires id and updates");
         }
         next = applyUpdateTask(next, id, updates);
+        results.push({ toolCallId: callId, name, output: { ok: true, id } });
         break;
       }
       case "delete_task": {
@@ -261,6 +275,7 @@ function applyToolCalls(
           throw new Error("delete_task requires id");
         }
         next = applyDeleteTask(next, id);
+        results.push({ toolCallId: callId, name, output: { ok: true, id } });
         break;
       }
       case "reorder_task": {
@@ -270,13 +285,32 @@ function applyToolCalls(
           throw new Error("reorder_task requires fromIndex and toIndex numbers");
         }
         next = applyReorderTask(next, fromIndex, toIndex);
+        results.push({ toolCallId: callId, name, output: { ok: true, fromIndex, toIndex } });
+        break;
+      }
+      case "get_task": {
+        const id = args.id as string | undefined;
+        if (!id) {
+          throw new Error("get_task requires id");
+        }
+        const task = next.tasks.find((t) => t.id === id) ?? null;
+        results.push({ toolCallId: callId, name, output: { task } });
+        break;
+      }
+      case "check_task_exists": {
+        const id = args.id as string | undefined;
+        if (!id) {
+          throw new Error("check_task_exists requires id");
+        }
+        const exists = next.tasks.some((t) => t.id === id);
+        results.push({ toolCallId: callId, name, output: { exists } });
         break;
       }
       default:
         throw new Error(`Unsupported tool: ${name}`);
     }
   }
-  return next;
+  return { instructions: next, results };
 }
 
 
@@ -355,6 +389,8 @@ export async function executeCommand(
   model?: string
 ): Promise<CommandResult> {
   try {
+    await auditStep("command.start", scope);
+    await audit(`command.text: ${command}`);
     const client: OpenAI = getOpenAIClient();
     const resolvedModel = model ?? TOOL_MODEL;
 
@@ -439,18 +475,47 @@ export async function executeCommand(
           },
         },
       },
+      {
+        type: "function",
+        function: {
+          name: "get_task",
+          description: "Get a task by id",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+            },
+            required: ["id"],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "check_task_exists",
+          description: "Check if a task id exists",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+            },
+            required: ["id"],
+          },
+        },
+      },
     ];
 
-    const completion = await createChatCompletion(client, {
+    await audit(`command.model: ${resolvedModel}`);
+
+    let completion = await createChatCompletion(client, {
       model: resolvedModel,
       messages,
       tools,
     });
 
-    const responseMessage = completion.choices[0]?.message;
-    const toolCalls = (responseMessage as unknown as { tool_calls?: ToolCall[] })
-      ?.tool_calls;
-    const responseText = responseMessage?.content;
+    let responseMessage = completion.choices[0]?.message;
+    let toolCalls = (responseMessage as unknown as { tool_calls?: ToolCall[] })?.tool_calls;
+    let responseText = responseMessage?.content;
     if (!responseText && (!toolCalls || toolCalls.length === 0)) {
       return {
         explanation: "No response from model",
@@ -459,36 +524,73 @@ export async function executeCommand(
       };
     }
 
-    if (toolCalls && toolCalls.length > 0) {
-      const updated = applyToolCalls(
-        context.instructions,
+    let updated = context.instructions;
+    const maxToolRounds = 3;
+    let rounds = 0;
+    while (toolCalls && toolCalls.length > 0 && rounds < maxToolRounds) {
+      rounds += 1;
+      await auditStep("command.tools", `${toolCalls.length}`);
+      for (const call of toolCalls) {
+        const name = call.function?.name ?? "unknown";
+        await audit(`command.tool: ${name} -> ${call.function?.arguments ?? ""}`);
+      }
+
+      const { instructions: nextInstructions, results } = executeToolCalls(
+        updated,
         toolCalls,
         scope,
         context.currentTask?.id
       );
-      const changed = diffFieldsDeep(
-        context.instructions as unknown as Record<string, unknown>,
-        updated as unknown as Record<string, unknown>
-      );
-      const updatedTask =
-        scope === "task" && context.currentTask
-          ? updated.tasks.find((t) => t.id === context.currentTask!.id)
-          : undefined;
-      return {
-        instructions: updated,
-        task: updatedTask,
-        explanation: responseText || "Instructions updated",
-        changedFields: changed,
+      updated = nextInstructions;
+
+      const toolMessages: OpenAI.ChatCompletionMessageParam[] = results.map((result) => ({
+        role: "tool",
+        tool_call_id: result.toolCallId,
+        content: JSON.stringify(result.output),
+      }));
+
+      const assistantMessage: OpenAI.ChatCompletionMessageParam = {
+        role: "assistant",
+        content: responseText ?? null,
+        tool_calls: toolCalls as unknown as OpenAI.ChatCompletionMessageToolCall[],
       };
+
+      completion = await createChatCompletion(client, {
+        model: resolvedModel,
+        messages: [...messages, assistantMessage, ...toolMessages],
+        tools,
+      });
+
+      responseMessage = completion.choices[0]?.message;
+      toolCalls = (responseMessage as unknown as { tool_calls?: ToolCall[] })?.tool_calls;
+      responseText = responseMessage?.content;
     }
 
+    if (toolCalls && toolCalls.length > 0) {
+      await auditWarn("command.tools.max_rounds");
+    }
+
+    const changed = diffFieldsDeep(
+      context.instructions as unknown as Record<string, unknown>,
+      updated as unknown as Record<string, unknown>
+    );
+    const updatedTask =
+      scope === "task" && context.currentTask
+        ? updated.tasks.find((t) => t.id === context.currentTask!.id)
+        : undefined;
+    const hasChanges = changed.length > 0;
+    if (!hasChanges) {
+      await auditWarn("command.no_changes");
+    }
     return {
-      explanation: responseText || "No tool calls provided",
-      changedFields: [],
-      error: "Model must use tools to edit instructions",
+      instructions: hasChanges ? updated : undefined,
+      task: updatedTask,
+      explanation: responseText || "Instructions updated",
+      changedFields: changed,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
+    await auditError(`command.failed: ${message}`);
     return {
       explanation: "",
       changedFields: [],
