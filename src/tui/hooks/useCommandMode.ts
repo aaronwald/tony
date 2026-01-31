@@ -133,7 +133,7 @@ function applyAddTask(instructions: Instructions, rawTask: Record<string, unknow
   if (instructions.tasks.some((t) => t.id === rawTask.id)) {
     throw new Error(`Task with id "${rawTask.id}" already exists`);
   }
-  const task = normalizeTask(ensureAgentMemory(rawTask)) as Task;
+  const task = normalizeTask(ensureAgentMemory(rawTask)) as unknown as Task;
   return {
     ...instructions,
     tasks: [...instructions.tasks, task],
@@ -155,7 +155,7 @@ function applyUpdateTask(
     ensureAgentMemory(
       deepMerge(existing, safeUpdates)
     )
-  ) as Task;
+  ) as unknown as Task;
   const nextTasks = [...instructions.tasks];
   nextTasks[idx] = merged;
   return { ...instructions, tasks: nextTasks };
@@ -244,19 +244,19 @@ function executeToolCalls(
           results.push({ toolCallId: callId, name, output: { ok: true, id: task.id } });
           break;
         }
-        const name = (args.name as string | undefined) ?? (args.id as string | undefined);
-        if (!name) {
+        const taskName = (args.name as string | undefined) ?? (args.id as string | undefined);
+        if (!taskName) {
           throw new Error("add_task requires a task object or name/id");
         }
         const built: Record<string, unknown> = {
-          id: name,
+          id: taskName,
           type: "agent",
           memory: { context: [], history: [] },
           input: args.input,
           outcome: args.outcome,
         };
         next = applyAddTask(next, built);
-        results.push({ toolCallId: callId, name, output: { ok: true, id: name } });
+        results.push({ toolCallId: callId, name, output: { ok: true, id: taskName } });
         break;
       }
       case "update_task": {
@@ -543,7 +543,7 @@ export async function executeCommand(
           },
         },
       },
-    ];
+    ] satisfies OpenAI.ChatCompletionTool[];
 
     await audit(`command.model: ${resolvedModel}`);
 

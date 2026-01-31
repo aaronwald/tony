@@ -46,6 +46,7 @@ require('@dotenvx/dotenvx').config({ quiet: true })
 
 
 const DEFAULT_MODEL = "liquid/lfm-2.5-1.2b-thinking:free";
+const TOOL_MODEL = "openai/gpt-4o-mini";
 const MAX_AGENT_ITERATIONS = 10;
 const MAX_REPEATED_ASSISTANT_MESSAGES = 2;
 const MAX_TASK_CHAIN_DEPTH = 3;
