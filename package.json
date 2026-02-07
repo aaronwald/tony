@@ -20,7 +20,7 @@
     "@dotenvx/dotenvx": "^1.52.0",
     "@modelcontextprotocol/sdk": "^1.25.2",
     "@openai/agents": "^0.4.3",
-    "@openrouter/sdk": "^0.5.1",
+    "@openrouter/sdk": "^0.8.0",
     "ink": "^6.6.0",
     "ink-text-input": "^6.0.0",
     "openai": "^6.16.0",
